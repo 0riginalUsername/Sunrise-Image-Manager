@@ -1,0 +1,584 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01//EN" "http://www.w3.org/TR/html4/strict.dtd">
+<html>
+
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<meta http-equiv="Content-type" content="text/html;charset=UTF-8">
+	<meta name="generator" content="PTGui" />
+	<meta name="viewport" content="width=800,user-scalable=false" />
+	<meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Auto load</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/pannellum@2.5.6/build/pannellum.css"/>
+    <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/pannellum@2.5.6/build/pannellum.js"></script>
+	<title>{{TITLE}}</title>
+
+	<link rel='stylesheet' href='https://sunrise-eng.com/wp-content/themes/sunrise-eng-2018/style.min.css?ver=1.0.2' />
+
+	<!-- -------------   style sheet:   ------------ -->
+	<style type="text/css">
+		#panorama {
+		margin-top: 5px;
+        width: 100%;
+        height: 80vh;
+		border-collapse: collapse;
+    	}			
+
+		#img {
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+        }
+		html,
+		body {
+			width: 100%;
+			height: 97%;
+		}
+
+		body {
+			font-family: Verdana, Arial, Helvetica, Sans-Serif;
+			font-size: 8pt;
+			margin: 0px;
+		}
+
+		h1 {
+			font-size: 12pt;
+			display: inline;
+		}
+
+		body,
+		td {
+			font-family: Verdana, Arial, Helvetica, Sans-Serif;
+			font-size: 10pt;
+		}
+
+		#maintable {
+			height: calc(100% - 200px) !important;
+			width: 100%;
+			padding-left: 20px;
+			padding-right: 20px;
+		}
+
+		#toptd {
+			text-align: center;
+			padding: 10px 20px 10px 20px;
+		}
+
+		#middletd {
+			height: 100%;
+			width: 100%;
+			text-align: center;
+		}
+
+		#bottomtd {
+			text-align: center;
+			padding: 10px 25px 15px 25px
+		}
+
+		#mypanoviewer {
+			height: 100%;
+			width: 100%;
+			-webkit-box-shadow: 5px 5px 10px rgb(180, 180, 180);
+			-moz-box-shadow: 5px 5px 10px rgb(180, 180, 180);
+			box-shadow: 5px 5px 10px rgb(180, 180, 180);
+		}
+
+		#notice,
+		#notice A:link,
+		#notice A:visited,
+		#notice A:active,
+		#notice A:hover {
+			font-size: 7pt;
+			color: rgb(160, 160, 160);
+			text-align: right;
+			padding-top: 5px;
+			text-decoration: none;
+		}
+
+		#notice A:hover {
+			text-decoration: underline;
+		}
+
+
+		#maintable {
+			margin: 150px auto 0 auto;
+			max-width: 100%;
+		}
+
+
+		.pagination-nav-wrapper {
+			padding: 40px 0 80px 0;
+			display: flex;
+			justify-content: space-between;
+		}
+
+		.pagination-link {
+			text-decoration: none;
+			font-family: "PT Sans", "Helvetica Neue", Helvetica, Arial, sans-serif;
+			font-size: 16px;
+			font-weight: 400;
+			display: inline-block;
+			padding: 8px 20px;
+			border-radius: 3px;
+			min-width: 100px;
+			color: white;
+			background-color: #0f4366;
+			text-align: center;
+			display: inline-block;
+			vertical-align: middle;
+		}
+
+		.pagination-link:hover {
+			opacity: 0.7;
+		}
+
+		.pagination-link svg {
+			display: inline-block;
+			vertical-align: middle;
+			margin-bottom: 2px;
+		}
+
+		.pagination-link.hide {
+			opacity: 0;
+			visibility: hidden;
+		}
+
+		.panoviewer-section {
+			padding: 180px 0 40px 0;
+		}
+
+		.video-embed-section {
+			padding: 180px 0 100px 0;
+		}
+	</style>
+
+	<!--[if lte IE 8]>
+<style type="text/css">
+/* Internet Explorer cannot fill a table row up to the remaining height; scrollbars will appear
+  therefore set the middle row to only 70% :
+*/  
+#middletd {
+	height:70%;
+}
+</style>
+<![endif]-->
+
+	
+	<!-- -------------  that's all!  ------------ -->
+</head>
+
+<body>
+	<!-- 
+		  Header 
+	  -->
+
+	  <header id="masthead" class="site-header">
+		<div class="site-header-upper">
+			<div class="container">
+				<script>
+                    window.addEventListener('DOMContentLoaded', function () {
+    // Safe to use DOM here
+
+					const cities = [
+					  { name: "New York, NY", lat: 40.7128, lng: -74.0060 },
+					  { name: "Chicago, IL", lat: 41.8781, lng: -87.6298 },
+					  { name: "Salt Lake City, UT", lat: 40.7608, lng: -111.8910 },
+					  { name: "Denver, CO", lat: 39.7392, lng: -104.9903 },
+					  { name: "Phoenix, AZ", lat: 33.4484, lng: -112.0740 },
+					  { name: "Tokyo, JP", lat: 35.6762, lng: 139.6503 }
+					  // Add more cities as needed
+					];
+					
+					const container = document.querySelector('.sunrise-clock');
+					
+					cities.forEach(city => {
+					  const url = `https://api.sunrisesunset.io/json?lat=${city.lat}&lng=${city.lng}&timezone=UTC&time_format=24`;
+					
+					  fetch(url)
+						.then(res => res.json())
+						.then(data => {
+						  const sunrise = data.results.sunrise;
+						  const p = document.createElement('p');
+						  p.textContent = `${sunrise} Sunrise in ${city.name}`;
+						  p.classList.add('no-show');
+						  container.appendChild(p);
+						})
+						.catch(err => {
+						  console.error(`Failed to fetch sunrise for ${city.name}:`, err);
+						});
+					});
+                });
+                        let index = 0;      
+                        const sunriseParagraphs = document.querySelectorAll('.sunrise-clock p');
+
+                        function showNextCity() {
+                        sunriseParagraphs.forEach(p => p.classList.add('no-show'));
+                        sunriseParagraphs[index].classList.remove('no-show');
+                        sunriseParagraphs[index].classList.add('active-clock');
+
+                        index = (index + 1) % sunriseParagraphs.length;
+                        }
+
+                        showNextCity(); // show first one immediately
+                        setInterval(showNextCity, 5000); // switch every 5 seconds
+					</script>
+					<div class="sunrise-clock">
+
+                    </div>
+				<!-- <div class="sunrise-clock">
+					<p style="display:block;" class="no-show active-clock"> 7:46 AM Sunrise in New York, NY</p>
+					<p class="no-show">7:41 AM Sunrise in Chicago, IL</p>
+					<p class="no-show">7:51 AM Sunrise in Cheyenne, WY</p>
+					<p class="no-show">7:48 AM Sunrise in Denver, CO</p>
+					<p class="no-show">8:20 AM Sunrise in Afton, WY</p>
+					<p class="no-show">8:20 AM Sunrise in Logan, UT</p>
+					<p class="no-show">8:19 AM Sunrise in Salt Lake City, UT</p>
+					<p class="no-show">8:16 AM Sunrise in Fillmore, UT</p>
+					<p class="no-show">8:17 AM Sunrise in Washington, UT</p>
+					<p class="no-show">7:03 AM Sunrise in Phoenix, AZ</p>
+					<p class="no-show">7:57 AM Sunrise in San Francisco, CA</p>
+					<p class="no-show">0:14 AM Sunrise in Anchorage, AK</p>
+					<p class="no-show">6:45 AM Sunrise in Honolulu, HI</p>
+					<p class="no-show">4:46 AM Sunrise in Sydney, AUS</p>
+					<p class="no-show">6:20 AM Sunrise in Tokyo, JP</p>
+					<p class="no-show">5:20 AM Sunrise in Beijing, CN</p>
+					<p class="no-show">6:20 AM Sunrise in Bangkok, TH</p>
+					<p class="no-show">6:47 AM Sunrise in New Delhi, IN</p>
+					<p class="no-show">7:56 AM Sunrise in Istanbul, TR</p>
+					<p class="no-show">8:04 AM Sunrise in Rome, IT</p>
+					<p class="no-show">8:24 AM Sunrise in London, UK</p>
+					<p class="no-show">5:12 AM Sunrise in Johannesburg, ZA</p>
+					<p class="no-show">5:03 AM Sunrise in Rio De Janeiro, BR</p>
+				</div> .sunrise-clock -->
+
+				<ul class="site-header-mini-links">
+					<li><a title="employee login" href="https://sunriseengineering-my.sharepoint.com/personal/sei_sunrise-eng_com/_layouts/15/onedrive.aspx">Employee Login</a></li>
+					<li><a title="Plan Room" href="http://planroom.sunrise-eng.com">Plan Room</a></li>
+				</ul>
+			</div> <!-- .container -->
+		</div> <!--.site-header-upper -->  
+
+		<div class="site-header-main">
+			<div class="container">
+				<!-- branding -->
+				<div class="site-branding">
+					<a class="site-logo-link" title="Sunrise Engineering" href="https://sunrise-eng.com">
+						<img class="site-logo-alt" alt="Sunrise logo" src="https://sunrise-eng.com/wp-content/themes/sunrise-eng-2018/assets/img/logo-sunrise-white.svg" />
+						<img class="site-logo-color" alt="Sunrise logo" src="https://sunrise-eng.com/wp-content/themes/sunrise-eng-2018/assets/img/logo-sunrise-color.svg" />
+					</a>
+				</div><!-- .site-branding -->
+
+				<!-- responsive nav trigger -->
+				<div class="site-nav-trigger">
+					<span></span>
+					<span></span>
+					<span></span>
+				</div>
+
+				<!-- main nav -->
+				<nav id="site-navigation" class="main-navigation">
+					<!-- <ul class="nav-links">
+						<li id="nav-item-services"><a title="Services" href="">Services</a>
+						<li id="nav-item-experience"><a title="Experience" href="">Experience</a>
+						<li id="nav-item-company"><a title="Company" href="">Company</a>
+						<li id="nav-item-careers"><a title="Careers" href="/careers/">Careers</a>
+						<li id="nav-item-whatsnew"><a title="What&apos;s New" href="/whats-new/">What&apos;s New</a>
+						<li id="nav-item-contact"><a title="Contact" href="">Contact</a>
+					</ul> -->
+
+					<div class="menu-primary-menu-container"><ul id="menu-primary-menu" class="menu"><li id="menu-item-1851" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-has-children menu-item-1851"><a href="https://sunrise-eng.com/services/">Services</a>
+						<ul class="sub-menu">
+							<li id="menu-item-1852" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-1852"><a href="https://sunrise-eng.com/services/building-code/">Building Code</a></li>
+							<li id="menu-item-1853" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-1853"><a href="https://sunrise-eng.com/services/engineering/">Engineering</a></li>
+							<li id="menu-item-1854" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-1854"><a href="https://sunrise-eng.com/services/gis/">GIS</a></li>
+							<li id="menu-item-1855" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-1855"><a href="https://sunrise-eng.com/services/natural-gas/">Natural Gas</a></li>
+							<li id="menu-item-1856" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-1856"><a href="https://sunrise-eng.com/services/survey/">Survey</a></li>
+						</ul>
+						</li>
+						<li id="menu-item-1857" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-has-children menu-item-1857"><a href="https://sunrise-eng.com/experience/">Experience</a>
+						<ul class="sub-menu">
+							<li id="menu-item-1858" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-has-children menu-item-1858"><a href="https://sunrise-eng.com/experience/building-code/">Building Code</a>
+							<ul class="sub-menu">
+								<li id="menu-item-1859" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-1859"><a href="https://sunrise-eng.com/experience/building-code/building-inspection/">Building Inspection</a></li>
+								<li id="menu-item-1860" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-1860"><a href="https://sunrise-eng.com/experience/building-code/peer-reviews-and-code-consulting/">Peer Reviews and Code Consulting</a></li>
+								<li id="menu-item-1861" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-1861"><a href="https://sunrise-eng.com/experience/building-code/plan-review/">Plan Review</a></li>
+								<li id="menu-item-1862" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-1862"><a href="https://sunrise-eng.com/experience/building-code/third-party-inspection/">Third-Party Inspection</a></li>
+							</ul>
+						</li>
+							<li id="menu-item-1863" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-has-children menu-item-1863"><a href="https://sunrise-eng.com/experience/engineering/">Engineering</a>
+							<ul class="sub-menu">
+								<li id="menu-item-1876" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-1876"><a href="https://sunrise-eng.com/experience/engineering/water/">Water</a></li>
+								<li id="menu-item-1875" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-1875"><a href="https://sunrise-eng.com/experience/engineering/wastewater/">Wastewater</a></li>
+								<li id="menu-item-1867" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-1867"><a href="https://sunrise-eng.com/experience/engineering/drainage-flood-control/">Drainage/Flood Control</a></li>
+								<li id="menu-item-1870" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-1870"><a href="https://sunrise-eng.com/experience/engineering/irrigation/">Irrigation</a></li>
+								<li id="menu-item-1871" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-1871"><a href="https://sunrise-eng.com/experience/engineering/experience-engineering-land-development/">Land Development</a></li>
+								<li id="menu-item-1872" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-1872"><a href="https://sunrise-eng.com/experience/engineering/renewable-energy/">Renewable Energy</a></li>
+								<li id="menu-item-1868" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-1868"><a href="https://sunrise-eng.com/experience/engineering/electrical/">Electrical</a></li>
+								<li id="menu-item-1873" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-1873"><a href="https://sunrise-eng.com/experience/engineering/structural/">Structural</a></li>
+								<li id="menu-item-1874" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-1874"><a href="https://sunrise-eng.com/experience/engineering/transportation-transit/">Transportation/Transit</a></li>
+								<li id="menu-item-1866" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-1866"><a href="https://sunrise-eng.com/experience/engineering/construction-engineering/">Construction Engineering</a></li>
+								<li id="menu-item-1869" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-1869"><a href="https://sunrise-eng.com/experience/engineering/environmental/">Environmental</a></li>
+								<li id="menu-item-1864" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-1864"><a href="https://sunrise-eng.com/experience/engineering/city-engineering/">City Engineering</a></li>
+								<li id="menu-item-1865" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-1865"><a href="https://sunrise-eng.com/experience/engineering/community-facilities/">Community Facilities</a></li>
+							</ul>
+						</li>
+							<li id="menu-item-1877" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-has-children menu-item-1877"><a href="https://sunrise-eng.com/experience/survey/">Survey</a>
+							<ul class="sub-menu">
+								<li id="menu-item-1880" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-1880"><a href="https://sunrise-eng.com/experience/survey/precision-construction-layout/">Precision Construction Layout</a></li>
+								<li id="menu-item-1878" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-1878"><a href="https://sunrise-eng.com/experience/survey/3d-imaging/">3D Imaging</a></li>
+								<li id="menu-item-1879" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-1879"><a href="https://sunrise-eng.com/experience/survey/land-boundary-easements-right-of-way/">Land Boundary, Easements, Right-of-Way</a></li>
+								<li id="menu-item-1881" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-1881"><a href="https://sunrise-eng.com/experience/survey/topographic-and-alta/">Topographic and ALTA</a></li>
+							</ul>
+						</li>
+							<li id="menu-item-1882" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-has-children menu-item-1882"><a href="https://sunrise-eng.com/experience/gis/">GIS</a>
+							<ul class="sub-menu">
+								<li id="menu-item-1890" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-1890"><a href="https://sunrise-eng.com/experience/gis/utility-systems-management/">Utility Systems Management</a></li>
+								<li id="menu-item-1883" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-1883"><a href="https://sunrise-eng.com/experience/gis/arts-parks-and-trails-management/">Arts, Parks, and Trails Management</a></li>
+								<li id="menu-item-1884" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-1884"><a href="https://sunrise-eng.com/experience/gis/cemetery-management/">Cemetery Management</a></li>
+								<li id="menu-item-1889" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-1889"><a href="https://sunrise-eng.com/experience/gis/transportation-system-management/">Transportation System Management</a></li>
+								<li id="menu-item-1888" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-1888"><a href="https://sunrise-eng.com/experience/gis/resource-management/">Resource Management</a></li>
+								<li id="menu-item-1885" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-1885"><a href="https://sunrise-eng.com/experience/gis/facility-asset-management/">Facility Asset Management</a></li>
+								<li id="menu-item-1892" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-1892"><a href="https://sunrise-eng.com/experience/gis/zoning-and-land-use-management/">Zoning &#038; Land Use Management</a></li>
+								<li id="menu-item-1887" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-1887"><a href="https://sunrise-eng.com/experience/gis/parcel-management/">Parcel Management</a></li>
+								<li id="menu-item-1886" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-1886"><a href="https://sunrise-eng.com/experience/gis/experience-gis-field-inspections/">Field Inspections</a></li>
+								<li id="menu-item-1891" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-1891"><a href="https://sunrise-eng.com/experience/gis/water-resource-management/">Water Resource Management</a></li>
+							</ul>
+						</li>
+							<li id="menu-item-1893" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-has-children menu-item-1893"><a href="https://sunrise-eng.com/experience/building-code/">Building Code</a>
+							<ul class="sub-menu">
+								<li id="menu-item-1894" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-1894"><a href="https://sunrise-eng.com/experience/building-code/building-inspection/">Building Inspection</a></li>
+								<li id="menu-item-1895" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-1895"><a href="https://sunrise-eng.com/experience/building-code/peer-reviews-and-code-consulting/">Peer Reviews and Code Consulting</a></li>
+								<li id="menu-item-1896" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-1896"><a href="https://sunrise-eng.com/experience/building-code/plan-review/">Plan Review</a></li>
+								<li id="menu-item-1897" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-1897"><a href="https://sunrise-eng.com/experience/building-code/third-party-inspection/">Third-Party Inspection</a></li>
+							</ul>
+						</li>
+						</ul>
+						</li>
+						<li id="menu-item-1898" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-has-children menu-item-1898"><a href="https://sunrise-eng.com/company/">Company</a>
+						<ul class="sub-menu">
+							<li id="menu-item-1899" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-1899"><a href="https://sunrise-eng.com/company/who-we-are/">Who We Are</a></li>
+							<li id="menu-item-1900" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-1900"><a href="https://sunrise-eng.com/company/history/">History</a></li>
+							<li id="menu-item-1901" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-1901"><a href="https://sunrise-eng.com/company/meet-the-experts/">Meet the Experts</a></li>
+							<li id="menu-item-1923" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-1923"><a href="https://sunrise-eng.com/company/culture/">Culture</a></li>
+						</ul>
+						</li>
+						<li id="menu-item-1916" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-has-children menu-item-1916"><a href="https://sunrise-eng.com/careers/">Careers</a>
+						<ul class="sub-menu">
+							<li id="menu-item-1917" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-1917"><a href="https://sunrise-eng.com/careers/benefits/">Benefits</a></li>
+							<li id="menu-item-1922" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-1922"><a href="https://sunrise-eng.com/careers/culture/">Culture</a></li>
+							<li id="menu-item-1906" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-1906"><a href="https://sunrise-eng.com/careers/submit-resume/">Submit Resume</a></li>
+						</ul>
+						</li>
+						<li id="menu-item-1903" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-1903"><a href="https://sunrise-eng.com/whats-new/">What&#8217;s New</a></li>
+						<li id="menu-item-1905" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-1905"><a href="https://sunrise-eng.com/contact/">Contact</a></li>
+						</ul>
+					</div>				
+				</nav><!-- #site-navigation -->
+			</div> <!-- .container -->
+		</div> <!-- .site-header-main-->
+	</header><!-- #masthead -->
+
+
+	<!--
+		PanoViewer Section
+	-->
+	<table id="maintable">
+		<tr>
+			<td id="middletd">
+				<div id="img">
+					<img src="{{IMG}}" alt="Panorama Image">
+				</div>
+			</td>
+		</tr>
+		<tr>
+			<td id="middletd">Image date and time taken: {{IMG_DATE}}</td>
+		</tr>
+		
+	</table>
+
+
+	<!--
+		Pagination Nav 
+	-->
+	<section class="pagination-nav-section">
+		<div class="container">
+
+			<div class="pagination-nav-wrapper">
+
+				<a class="pagination-link pagination-prev" title="Previous" href="">
+					<svg viewBox="0 0 34.075 34.075" style="enable-background:new 0 0 34.075 34.075;" xml:space="preserve" width="13px" height="13px">
+						<g>
+							<g>
+								<path d="M24.57,34.075c-0.505,0-1.011-0.191-1.396-0.577L8.11,18.432c-0.771-0.771-0.771-2.019,0-2.79    L23.174,0.578c0.771-0.771,2.02-0.771,2.791,0s0.771,2.02,0,2.79l-13.67,13.669l13.67,13.669c0.771,0.771,0.771,2.021,0,2.792    C25.58,33.883,25.075,34.075,24.57,34.075z" fill="#FFFFFF"/>
+							</g>
+						</g>
+					</svg> 
+					 Prev
+				</a>
+				<a class="pagination-link pagination-next" title="Next" href="">
+					Next 
+					<svg viewBox="0 0 238.003 238.003" style="enable-background:new 0 0 238.003 238.003;" xml:space="preserve" width="13px" height="13px">
+						<g>
+							<g>
+								<path d="M181.776,107.719L78.705,4.648c-6.198-6.198-16.273-6.198-22.47,0s-6.198,16.273,0,22.47    l91.883,91.883l-91.883,91.883c-6.198,6.198-6.198,16.273,0,22.47s16.273,6.198,22.47,0l103.071-103.039    c3.146-3.146,4.672-7.246,4.64-11.283C186.416,114.902,184.89,110.833,181.776,107.719z" fill="#FFFFFF"/>
+							</g>
+						</g>
+					</svg>
+				</a>
+
+			</div> <!-- .pagination-nav-wrapper -->
+
+		</div> <!-- .container -->
+	</section>
+
+
+	<!-- 
+		Footer
+	-->
+	<footer id="colophon" class="site-footer">
+		<div class="site-footer-logo">
+			<img alt="sunrise logo" src="https://sunrise-eng.com/wp-content/themes/sunrise-eng-2018/assets/img/logo-sunrise-black.svg">
+		</div>
+
+		<div class="site-footer-followus">
+			<h3>Follow us</h3>
+			<p>Connect with us and <br>follow our projects!</p>
+
+			<a class="site-footer-ss-link" title="LinkedIn" href="https://www.linkedin.com/company/sunrise-engineering/">
+				<img alt="logo linkedin" src="https://sunrise-eng.com/wp-content/themes/sunrise-eng-2018/assets/img/icons/icon-linkedin-black.svg">
+			</a>
+			<a class="site-footer-ss-link" title="Facebook" href="https://www.facebook.com/sunriseeng/">
+				<img alt="logo Facebook" src="https://sunrise-eng.com/wp-content/themes/sunrise-eng-2018/assets/img/icons/icon-facebook-black.svg">
+			</a>
+			<a class="site-footer-ss-link" title="Twitter" href="https://twitter.com/Sunrise_Eng">
+				<img alt="logo Twitter" src="https://sunrise-eng.com/wp-content/themes/sunrise-eng-2018/assets/img/icons/icon-twitter-black.svg">
+			</a>
+			<a class="site-footer-ss-link" title="Instagram" href="https://www.instagram.com/sunrise_engineering/">
+				<img alt="logo Instagram" src="https://sunrise-eng.com/wp-content/themes/sunrise-eng-2018/assets/img/icons/icon-instagram-black.svg">
+			</a>
+		</div>
+
+		<div class="site-footer-contact">
+			<h3>Contact us</h3>
+			<p>800-560-6151</p>
+			<p class="site-footer-email"><a title="email to contactus@sunrise-eng.com" href="mailto:contactus@sunrise-eng.com">contactus@sunrise-eng.com</a></p>
+
+			<a class="btn-black" title="find a contact" href="https://sunrise-eng.com/contact/">Find A Contact</a>
+		</div>
+	</footer><!-- #colophon -->
+
+
+	<script type='text/javascript' src="https://ajax.googleapis.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+	<script type='text/javascript' src='https://sunrise-eng.com/wp-content/themes/sunrise-eng-2018/assets/js/vendors.min.js?ver=1.0.2'></script>
+	<script type='text/javascript' src='https://sunrise-eng.com/wp-content/themes/sunrise-eng-2018/assets/js/custom.min.js?ver=1.0.2'></script>
+
+	<script type="text/javascript">
+	
+	var current_path = window.location.pathname.split('/').pop().slice(0,-4);
+
+
+
+
+document.title = current_path ;
+		// get file name 
+		var $fileNameFull = window.location.pathname.split('/').pop().replace('.htm', '');
+
+		// get the number in file name and count its digits
+		var $fileNumber = $fileNameFull.match( /\d+/ ).pop();
+		var $fileNumberLength = $fileNumber.length;
+
+		// get file name without number
+		var $fileName = $fileNameFull.replace($fileNumber, '');
+
+		// next file number
+		var $fileNext = parseInt($fileNumber) + 1;
+		var $fileNextLength = $fileNext.toString().length;
+
+		// prev file number
+		var $filePrev = parseInt($fileNumber) - 1;
+		var $filePrevLength = $filePrev.toString().length;
+
+
+		// function add padding zeroes to equal length
+		function pad(number, length) {
+			var str = '' + number;
+			while (str.length < length) {
+				str = '0' + str;
+			}
+			return str;
+		}
+		
+		// function to check if url exists
+		function UrlExists(url, cb) {
+			jQuery.ajax({
+				url:      url,
+				dataType: 'text',
+				type:     'GET',
+				complete:  function(xhr){
+					if(typeof cb === 'function')
+					cb.apply(this, [xhr.status]);
+				}
+			});
+		}
+
+
+		// calculate next page link
+		var $fileNumberNext = pad($fileNext , $fileNumberLength);
+		var $fileNameNext = $fileName + $fileNumberNext + '.htm';
+
+		UrlExists($fileNameNext, function(status){
+			if(status === 200){
+				$('.pagination-next').attr('href', $fileNameNext);
+			}
+			else if(status === 404){
+				$('.pagination-next').addClass('hide');
+			}
+		});
+
+		// calculate prev page link
+		var $fileNumberPrev = pad($filePrev , $fileNumberLength);
+		var $fileNamePrev = $fileName + $fileNumberPrev + '.htm';
+
+		UrlExists($fileNamePrev, function(status){
+			if(status === 200){
+				$('.pagination-prev').attr('href', $fileNamePrev);
+			}
+			else if(status === 404){
+				$('.pagination-prev').addClass('hide');
+			}
+		});
+
+    // Monkey-patch document.createElement to log iframe creations
+    (function() {
+        const originalCreateElement = document.createElement;
+        document.createElement = function(tagName) {
+            if (tagName.toLowerCase() === 'iframe') {
+                console.warn('Iframe being created!', new Error().stack);
+            }
+            return originalCreateElement.apply(this, arguments);
+        };
+    })();
+
+    // Also observe DOM mutations for iframe insertions
+    const observer = new MutationObserver(function(mutations) {
+        mutations.forEach(function(mutation) {
+            mutation.addedNodes.forEach(function(node) {
+                if (node.tagName && node.tagName.toLowerCase() === 'iframe') {
+                    console.warn('Iframe added to DOM:', node);
+                    console.warn('Iframe src:', node.src);
+                }
+            });
+        });
+    });
+
+    observer.observe(document.body, { childList: true, subtree: true });
+
+    console.log('Iframe debug hooks installed.');
+
+	</script>
+
+	
+</body>
+
+</html>
