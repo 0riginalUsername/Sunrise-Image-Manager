@@ -8,7 +8,6 @@
     "recipients_file": "./email_recipients.txt",
     "temp_root": "./panoTemp"
   },
-  "env_path": "./.env",
   "site": {
     "domain_base": "https://www.seihds.com",
     "domain_prefix": "/auto"
@@ -24,8 +23,7 @@
     "Kevin",
     "Morgan",
     "Nick",
-    "Tanner",
-    "Terminator"
+    "Tanner"
   ],
   "ftp": {
     "max_threads_probe": 6

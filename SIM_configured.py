@@ -9,7 +9,7 @@ How it works
 - Looks for a config file path in the environment variable SIM_CONFIG or a --config=<path> CLI arg.
 - If not provided, it tries a local "config.json" next to this script and then "~/.sim_config.json".
 - Reads paths, site options, image settings, employee list, etc. from that JSON.
-- Secrets (FTP/Email) still come from .env (whose path is ALSO provided by JSON).
+- Secrets (FTP/Email) are managed through keyring for secure credential storage.
 
 Author: ChatGPT (refactor for Kevin)
 Date: 2025-09-09
@@ -37,7 +37,7 @@ from PIL import Image, ExifTags
 import geopandas as gpd
 from shapely.geometry import Point
 from pyproj import Transformer
-from dotenv import load_dotenv
+import keyring
 from jinja2 import Environment, FileSystemLoader
 import ezdxf
 from ezdxf.addons import Importer
@@ -47,7 +47,7 @@ from PyQt5.QtWidgets import (
     QFileDialog, QMessageBox, QInputDialog, QComboBox, QLineEdit, QDialog, QDialogButtonBox, QTextEdit, QFrame,
     QFormLayout, QGroupBox, QScrollArea, QSpinBox, QCheckBox
 )
-from PyQt5.QtGui import QPixmap, QFont, QPalette, QColor, QDragEnterEvent, QDropEvent
+from PyQt5.QtGui import QPixmap, QFont, QPalette, QColor, QDragEnterEvent, QDropEvent, QIcon
 from PyQt5.QtCore import Qt, QMimeData, QSize, pyqtSignal
 import warnings
 from PIL import Image
@@ -141,28 +141,64 @@ def setup_project_logging(client_name, project_name, file_dt):
     return log_file_path
 
 # --------------------
-# .env loading (path from JSON)
+# Keyring credential management
 # --------------------
-def get_env_path() -> Path | None:
-    p = cfg_get(CONFIG, "env_path")
-    return Path(p) if p else None
+KEYRING_SERVICE = "SIM-FTP-Credentials"
 
-if get_env_path():
-    load_dotenv(dotenv_path=get_env_path())
-    logging.info(f"Loaded .env from: {get_env_path()}")
-else:
-    load_dotenv()  # fallback to default search
-    logging.info("Loaded .env from default search path.")
+def get_ftp_credentials():
+    """Get FTP credentials from keyring"""
+    try:
+        server = keyring.get_password(KEYRING_SERVICE, "FTP_SERVER")
+        username = keyring.get_password(KEYRING_SERVICE, "FTP_USERNAME")
+        password = keyring.get_password(KEYRING_SERVICE, "FTP_PASSWORD")
+        return server, username, password
+    except Exception as e:
+        logging.error(f"Failed to retrieve FTP credentials from keyring: {e}")
+        return None, None, None
 
-# Secrets pulled from .env
-FTP_SERVER = os.getenv("FTP_SERVER")
-FTP_USERNAME = os.getenv("FTP_USERNAME")
-FTP_PASSWORD = os.getenv("FTP_PASSWORD")
-EMAIL_HOST = os.getenv("EMAIL_HOST")
-EMAIL_PORT = int(os.getenv("EMAIL_PORT", 587))
-EMAIL_USER = os.getenv("EMAIL_USER")
-EMAIL_PASS = os.getenv("EMAIL_PASSWORD")
-EMAIL_SENDER = os.getenv("EMAIL_SENDER")
+def set_ftp_credentials(server, username, password):
+    """Set FTP credentials in keyring"""
+    try:
+        keyring.set_password(KEYRING_SERVICE, "FTP_SERVER", server)
+        keyring.set_password(KEYRING_SERVICE, "FTP_USERNAME", username)
+        keyring.set_password(KEYRING_SERVICE, "FTP_PASSWORD", password)
+        logging.info("FTP credentials saved to keyring successfully")
+        return True
+    except Exception as e:
+        logging.error(f"Failed to save FTP credentials to keyring: {e}")
+        return False
+
+def get_email_credentials():
+    """Get email credentials from keyring"""
+    try:
+        host = keyring.get_password(KEYRING_SERVICE, "EMAIL_HOST")
+        port = keyring.get_password(KEYRING_SERVICE, "EMAIL_PORT")
+        user = keyring.get_password(KEYRING_SERVICE, "EMAIL_USER")
+        password = keyring.get_password(KEYRING_SERVICE, "EMAIL_PASSWORD")
+        sender = keyring.get_password(KEYRING_SERVICE, "EMAIL_SENDER")
+        return host, port, user, password, sender
+    except Exception as e:
+        logging.error(f"Failed to retrieve email credentials from keyring: {e}")
+        return None, None, None, None, None
+
+def set_email_credentials(host, port, user, password, sender):
+    """Set email credentials in keyring"""
+    try:
+        keyring.set_password(KEYRING_SERVICE, "EMAIL_HOST", host)
+        keyring.set_password(KEYRING_SERVICE, "EMAIL_PORT", str(port))
+        keyring.set_password(KEYRING_SERVICE, "EMAIL_USER", user)
+        keyring.set_password(KEYRING_SERVICE, "EMAIL_PASSWORD", password)
+        keyring.set_password(KEYRING_SERVICE, "EMAIL_SENDER", sender)
+        logging.info("Email credentials saved to keyring successfully")
+        return True
+    except Exception as e:
+        logging.error(f"Failed to save email credentials to keyring: {e}")
+        return False
+
+# Load credentials from keyring
+FTP_SERVER, FTP_USERNAME, FTP_PASSWORD = get_ftp_credentials()
+EMAIL_HOST, EMAIL_PORT_STR, EMAIL_USER, EMAIL_PASS, EMAIL_SENDER = get_email_credentials()
+EMAIL_PORT = int(EMAIL_PORT_STR) if EMAIL_PORT_STR else 587
 
 # --------------------
 # Paths & settings from JSON
@@ -201,7 +237,7 @@ BODY_FONT = QFont(SUNRISE_FONT, 10)
 # --------------------
 def validate_ftp_credentials():
     if not FTP_SERVER or not FTP_USERNAME or not FTP_PASSWORD:
-        logging.error("🚨 FTP credentials are missing or incomplete. Check your .env file.")
+        logging.error("🚨 FTP credentials are missing or incomplete. Please configure them in the settings.")
         return False
     logging.info(f"✅ FTP credentials loaded: server={FTP_SERVER}, username={FTP_USERNAME}")
     return True
@@ -743,6 +779,7 @@ class ConfigDialog(QDialog):
         self.create_images_group(main_layout)
         self.create_employees_group(main_layout)
         self.create_ftp_group(main_layout)
+        self.create_credentials_group(main_layout)
         self.create_ui_group(main_layout)
         
         # Add scroll area to main layout
@@ -763,37 +800,89 @@ class ConfigDialog(QDialog):
         group = QGroupBox("Paths")
         form = QFormLayout(group)
         
+        # Master DXF file
         self.master_dxf = QLineEdit()
         self.master_dxf.setPlaceholderText("Path to master DXF file")
-        form.addRow("Master DXF:", self.master_dxf)
+        master_dxf_layout = QHBoxLayout()
+        master_dxf_layout.addWidget(self.master_dxf)
+        master_dxf_btn = QPushButton("📁")
+        master_dxf_btn.setToolTip("Select DXF file")
+        master_dxf_btn.setFixedSize(30, 30)
+        master_dxf_btn.clicked.connect(lambda: self.select_file(self.master_dxf, "Select Master DXF File", "DXF Files (*.dxf);;All Files (*.*)"))
+        master_dxf_layout.addWidget(master_dxf_btn)
+        form.addRow("Master DXF:", master_dxf_layout)
         
+        # Output root directory
         self.output_root = QLineEdit()
         self.output_root.setPlaceholderText("Output directory root")
-        form.addRow("Output Root:", self.output_root)
+        output_root_layout = QHBoxLayout()
+        output_root_layout.addWidget(self.output_root)
+        output_root_btn = QPushButton("📁")
+        output_root_btn.setToolTip("Select output directory")
+        output_root_btn.setFixedSize(30, 30)
+        output_root_btn.clicked.connect(lambda: self.select_folder(self.output_root, "Select Output Directory"))
+        output_root_layout.addWidget(output_root_btn)
+        form.addRow("Output Root:", output_root_layout)
         
+        # Templates directory
         self.templates_dir = QLineEdit()
         self.templates_dir.setPlaceholderText("Templates directory")
-        form.addRow("Templates Dir:", self.templates_dir)
+        templates_dir_layout = QHBoxLayout()
+        templates_dir_layout.addWidget(self.templates_dir)
+        templates_dir_btn = QPushButton("📁")
+        templates_dir_btn.setToolTip("Select templates directory")
+        templates_dir_btn.setFixedSize(30, 30)
+        templates_dir_btn.clicked.connect(lambda: self.select_folder(self.templates_dir, "Select Templates Directory"))
+        templates_dir_layout.addWidget(templates_dir_btn)
+        form.addRow("Templates Dir:", templates_dir_layout)
         
+        # Photo counter file
         self.photo_counter = QLineEdit()
         self.photo_counter.setPlaceholderText("Photo counter file path")
-        form.addRow("Photo Counter:", self.photo_counter)
+        photo_counter_layout = QHBoxLayout()
+        photo_counter_layout.addWidget(self.photo_counter)
+        photo_counter_btn = QPushButton("📁")
+        photo_counter_btn.setToolTip("Select photo counter file")
+        photo_counter_btn.setFixedSize(30, 30)
+        photo_counter_btn.clicked.connect(lambda: self.select_file(self.photo_counter, "Select Photo Counter File", "Text Files (*.txt);;All Files (*.*)"))
+        photo_counter_layout.addWidget(photo_counter_btn)
+        form.addRow("Photo Counter:", photo_counter_layout)
         
+        # State plane shapefile
         self.stateplane_shapefile = QLineEdit()
         self.stateplane_shapefile.setPlaceholderText("State plane shapefile path")
-        form.addRow("State Plane Shapefile:", self.stateplane_shapefile)
+        stateplane_layout = QHBoxLayout()
+        stateplane_layout.addWidget(self.stateplane_shapefile)
+        stateplane_btn = QPushButton("📁")
+        stateplane_btn.setToolTip("Select shapefile")
+        stateplane_btn.setFixedSize(30, 30)
+        stateplane_btn.clicked.connect(lambda: self.select_file(self.stateplane_shapefile, "Select State Plane Shapefile", "Shapefiles (*.shp);;All Files (*.*)"))
+        stateplane_layout.addWidget(stateplane_btn)
+        form.addRow("State Plane Shapefile:", stateplane_layout)
         
+        # Recipients file
         self.recipients_file = QLineEdit()
         self.recipients_file.setPlaceholderText("Email recipients file path")
-        form.addRow("Recipients File:", self.recipients_file)
+        recipients_layout = QHBoxLayout()
+        recipients_layout.addWidget(self.recipients_file)
+        recipients_btn = QPushButton("📁")
+        recipients_btn.setToolTip("Select recipients file")
+        recipients_btn.setFixedSize(30, 30)
+        recipients_btn.clicked.connect(lambda: self.select_file(self.recipients_file, "Select Email Recipients File", "Text Files (*.txt);;All Files (*.*)"))
+        recipients_layout.addWidget(recipients_btn)
+        form.addRow("Recipients File:", recipients_layout)
         
+        # Temp root directory
         self.temp_root = QLineEdit()
         self.temp_root.setPlaceholderText("Temporary files directory")
-        form.addRow("Temp Root:", self.temp_root)
-        
-        self.env_path = QLineEdit()
-        self.env_path.setPlaceholderText("Path to .env file")
-        form.addRow("Environment File:", self.env_path)
+        temp_root_layout = QHBoxLayout()
+        temp_root_layout.addWidget(self.temp_root)
+        temp_root_btn = QPushButton("📁")
+        temp_root_btn.setToolTip("Select temporary directory")
+        temp_root_btn.setFixedSize(30, 30)
+        temp_root_btn.clicked.connect(lambda: self.select_folder(self.temp_root, "Select Temporary Directory"))
+        temp_root_layout.addWidget(temp_root_btn)
+        form.addRow("Temp Root:", temp_root_layout)
         
         layout.addWidget(group)
     
@@ -849,6 +938,59 @@ class ConfigDialog(QDialog):
         
         layout.addWidget(group)
     
+    def create_credentials_group(self, layout):
+        group = QGroupBox("Credentials (Keyring)")
+        form = QFormLayout(group)
+        
+        # FTP Credentials
+        ftp_label = QLabel("FTP Credentials:")
+        ftp_label.setFont(SUBHEADER_FONT)
+        form.addRow(ftp_label, QLabel(""))
+        
+        self.ftp_server = QLineEdit()
+        self.ftp_server.setPlaceholderText("FTP Server")
+        self.ftp_server.setEchoMode(QLineEdit.Normal)
+        form.addRow("FTP Server:", self.ftp_server)
+        
+        self.ftp_username = QLineEdit()
+        self.ftp_username.setPlaceholderText("FTP Username")
+        self.ftp_username.setEchoMode(QLineEdit.Normal)
+        form.addRow("FTP Username:", self.ftp_username)
+        
+        self.ftp_password = QLineEdit()
+        self.ftp_password.setPlaceholderText("FTP Password")
+        self.ftp_password.setEchoMode(QLineEdit.Password)
+        form.addRow("FTP Password:", self.ftp_password)
+        
+        # Email Credentials
+        email_label = QLabel("Email Credentials:")
+        email_label.setFont(SUBHEADER_FONT)
+        form.addRow(email_label, QLabel(""))
+        
+        self.email_host = QLineEdit()
+        self.email_host.setPlaceholderText("Email Host (SMTP)")
+        form.addRow("Email Host:", self.email_host)
+        
+        self.email_port = QSpinBox()
+        self.email_port.setRange(1, 65535)
+        self.email_port.setValue(587)
+        form.addRow("Email Port:", self.email_port)
+        
+        self.email_user = QLineEdit()
+        self.email_user.setPlaceholderText("Email Username")
+        form.addRow("Email User:", self.email_user)
+        
+        self.email_password = QLineEdit()
+        self.email_password.setPlaceholderText("Email Password")
+        self.email_password.setEchoMode(QLineEdit.Password)
+        form.addRow("Email Password:", self.email_password)
+        
+        self.email_sender = QLineEdit()
+        self.email_sender.setPlaceholderText("Email Sender Address")
+        form.addRow("Email Sender:", self.email_sender)
+        
+        layout.addWidget(group)
+    
     def create_ui_group(self, layout):
         group = QGroupBox("UI Settings")
         form = QFormLayout(group)
@@ -860,7 +1002,7 @@ class ConfigDialog(QDialog):
         layout.addWidget(group)
     
     def load_defaults(self):
-        """Load default configuration values"""
+        """Load default configuration values and existing credentials"""
         self.master_dxf.setText("./master.dxf")
         self.output_root.setText("./output")
         self.templates_dir.setText("./templates")
@@ -868,7 +1010,6 @@ class ConfigDialog(QDialog):
         self.stateplane_shapefile.setText("./NAD83SPCEPSG.shp")
         self.recipients_file.setText("./email_recipients.txt")
         self.temp_root.setText("./panoTemp")
-        self.env_path.setText("./.env")
         
         self.domain_base.setText("https://www.seihds.com")
         self.domain_prefix.setText("/auto")
@@ -881,9 +1022,88 @@ class ConfigDialog(QDialog):
         self.ftp_max_threads.setValue(6)
         
         self.font_family.setText("Segoe UI")
+        
+        # Load existing credentials from keyring
+        self.load_existing_credentials()
+    
+    def select_file(self, line_edit, title="Select File", file_filter="All Files (*.*)"):
+        """Open file dialog and update the line edit with selected file path"""
+        current_path = line_edit.text().strip()
+        if current_path and os.path.exists(current_path):
+            start_dir = os.path.dirname(current_path)
+        else:
+            start_dir = str(Path.cwd())
+        
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, title, start_dir, file_filter
+        )
+        if file_path:
+            line_edit.setText(file_path)
+    
+    def select_folder(self, line_edit, title="Select Folder"):
+        """Open folder dialog and update the line edit with selected folder path"""
+        current_path = line_edit.text().strip()
+        if current_path and os.path.exists(current_path):
+            start_dir = current_path
+        else:
+            start_dir = str(Path.cwd())
+        
+        folder_path = QFileDialog.getExistingDirectory(
+            self, title, start_dir
+        )
+        if folder_path:
+            line_edit.setText(folder_path)
+    
+    def load_existing_credentials(self):
+        """Load existing credentials from keyring"""
+        # Load FTP credentials
+        ftp_server, ftp_username, ftp_password = get_ftp_credentials()
+        if ftp_server:
+            self.ftp_server.setText(ftp_server)
+        if ftp_username:
+            self.ftp_username.setText(ftp_username)
+        if ftp_password:
+            self.ftp_password.setText(ftp_password)
+        
+        # Load email credentials
+        email_host, email_port, email_user, email_password, email_sender = get_email_credentials()
+        if email_host:
+            self.email_host.setText(email_host)
+        if email_port:
+            self.email_port.setValue(int(email_port))
+        if email_user:
+            self.email_user.setText(email_user)
+        if email_password:
+            self.email_password.setText(email_password)
+        if email_sender:
+            self.email_sender.setText(email_sender)
     
     def save_config(self):
-        """Save configuration to JSON file"""
+        """Save configuration to JSON file and credentials to keyring"""
+        # Save credentials to keyring first
+        ftp_success = True
+        email_success = True
+        
+        # Save FTP credentials if provided
+        if self.ftp_server.text().strip() and self.ftp_username.text().strip() and self.ftp_password.text().strip():
+            ftp_success = set_ftp_credentials(
+                self.ftp_server.text().strip(),
+                self.ftp_username.text().strip(),
+                self.ftp_password.text().strip()
+            )
+        
+        # Save email credentials if provided
+        if (self.email_host.text().strip() and self.email_user.text().strip() and 
+            self.email_password.text().strip() and self.email_sender.text().strip()):
+            email_success = set_email_credentials(
+                self.email_host.text().strip(),
+                self.email_port.value(),
+                self.email_user.text().strip(),
+                self.email_password.text().strip(),
+                self.email_sender.text().strip()
+            )
+        
+        # Save configuration to JSON
         config = {
             "paths": {
                 "master_dxf": self.master_dxf.text().strip(),
@@ -894,7 +1114,6 @@ class ConfigDialog(QDialog):
                 "recipients_file": self.recipients_file.text().strip(),
                 "temp_root": self.temp_root.text().strip()
             },
-            "env_path": self.env_path.text().strip(),
             "site": {
                 "domain_base": self.domain_base.text().strip(),
                 "domain_prefix": self.domain_prefix.text().strip()
@@ -917,7 +1136,15 @@ class ConfigDialog(QDialog):
         try:
             with open(config_path, "w", encoding="utf-8") as f:
                 json.dump(config, f, indent=2, ensure_ascii=False)
-            QMessageBox.information(self, "Success", f"Configuration saved to {config_path}")
+            
+            # Show success message
+            success_msg = f"Configuration saved to {config_path}"
+            if ftp_success and email_success:
+                success_msg += "\nCredentials saved to keyring successfully"
+            elif not ftp_success or not email_success:
+                success_msg += "\nWarning: Some credentials may not have been saved to keyring"
+            
+            QMessageBox.information(self, "Success", success_msg)
             self.accept()
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to save configuration: {e}")
@@ -1023,11 +1250,18 @@ class Pano2DWGApp(QMainWindow):
         self.setAcceptDrops(False)
         self.pano_files = []
         self.photo_files = []
+        
+        # Create main widget and layout
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
         main_layout = QVBoxLayout(main_widget)
         main_layout.setSpacing(10)
-        # Logo
+        
+        # Create top bar with logo and settings button
+        top_bar_layout = QHBoxLayout()
+        top_bar_layout.setContentsMargins(0, 0, 0, 10)
+        
+        # Logo (left side)
         self.logo_label = QLabel()
         self.logo_label.setAlignment(Qt.AlignCenter)
         logo_path = str(TEMPLATES_DIR / "logo.jpg")
@@ -1037,7 +1271,40 @@ class Pano2DWGApp(QMainWindow):
             self.logo_label.setPixmap(scaled_pixmap)
         else:
             self.logo_label.setText("[Logo not found]")
-        main_layout.addWidget(self.logo_label)
+        
+        # Settings button (right side)
+        self.settings_button = QPushButton()
+        self.settings_button.setFixedSize(40, 40)
+        self.settings_button.setToolTip("Settings")
+        self.settings_button.clicked.connect(self.open_settings)
+        
+        # Create cogwheel icon using Unicode symbol
+        self.settings_button.setText("⚙")
+        self.settings_button.setFont(QFont("Segoe UI Symbol", 16))
+        self.settings_button.setStyleSheet(f"""
+            QPushButton {{
+                background: {SUNRISE_NAVY};
+                color: white;
+                border: none;
+                border-radius: 20px;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background: {SUNRISE_GRAY};
+            }}
+            QPushButton:pressed {{
+                background: {SUNRISE_YELLOW};
+                color: {SUNRISE_NAVY};
+            }}
+        """)
+        
+        # Add to top bar layout
+        top_bar_layout.addWidget(self.logo_label)
+        top_bar_layout.addStretch()  # Push settings button to the right
+        top_bar_layout.addWidget(self.settings_button)
+        
+        # Add top bar to main layout
+        main_layout.addLayout(top_bar_layout)
         # Drop zones
         self.drop_frame = DualDropFrame(self)
         main_layout.addWidget(self.drop_frame, 1)
@@ -1081,6 +1348,18 @@ class Pano2DWGApp(QMainWindow):
         QMessageBox.warning(self, title, message)
     def show_info(self, title, message):
         QMessageBox.information(self, title, message)
+    
+    def open_settings(self):
+        """Open the configuration dialog"""
+        config_dialog = ConfigDialog(self)
+        if config_dialog.exec_() == QDialog.Accepted:
+            # Reload configuration after saving
+            global CONFIG
+            CONFIG = load_config()
+            # Re-initialize global variables with new config
+            reinitialize_globals()
+            # Show success message
+            self.show_info("Settings Updated", "Configuration has been updated successfully.")
     def show_upload_complete(self, local_dir):
         msg = QMessageBox(self)
         msg.setWindowTitle("Upload Complete")
@@ -1213,6 +1492,7 @@ def reinitialize_globals():
     global STATEPLANE_SHAPEFILE, RECIPIENTS_FILE, TEMP_ROOT
     global DOMAIN_BASE, DOMAIN_PREFIX, MAX_WIDTH, DEFAULT_JPEG_QUALITY
     global EMPLOYEE_NAMES, FTP_MAX_THREADS, SUNRISE_FONT, HEADER_FONT, SUBHEADER_FONT, BODY_FONT
+    global FTP_SERVER, FTP_USERNAME, FTP_PASSWORD, EMAIL_HOST, EMAIL_PORT, EMAIL_USER, EMAIL_PASS, EMAIL_SENDER
     
     # Re-initialize paths and settings from JSON
     MASTER_DXF = Path(cfg_get(CONFIG, "paths.master_dxf", "")).expanduser()
@@ -1238,6 +1518,11 @@ def reinitialize_globals():
     HEADER_FONT = QFont(SUNRISE_FONT, 16, QFont.Bold)
     SUBHEADER_FONT = QFont(SUNRISE_FONT, 12, QFont.Bold)
     BODY_FONT = QFont(SUNRISE_FONT, 10)
+    
+    # Re-load credentials from keyring
+    FTP_SERVER, FTP_USERNAME, FTP_PASSWORD = get_ftp_credentials()
+    EMAIL_HOST, EMAIL_PORT_STR, EMAIL_USER, EMAIL_PASS, EMAIL_SENDER = get_email_credentials()
+    EMAIL_PORT = int(EMAIL_PORT_STR) if EMAIL_PORT_STR else 587
 
 if __name__ == "__main__":
     main()
