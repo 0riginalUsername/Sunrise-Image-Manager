@@ -1,0 +1,36 @@
+{
+  "paths": {
+    "master_dxf": "./master.dxf",
+    "output_root": "./output",
+    "templates_dir": "./templates",
+    "photo_counter": "./_ROLLING_COUNT/photo_counter.txt",
+    "stateplane_shapefile": "./NAD83SPCEPSG.shp",
+    "recipients_file": "./email_recipients.txt",
+    "temp_root": "./panoTemp"
+  },
+  "env_path": "./.env",
+  "site": {
+    "domain_base": "https://www.seihds.com",
+    "domain_prefix": "/auto"
+  },
+  "images": {
+    "max_width": 8192,
+    "compress_quality": 30
+  },
+  "employees": [
+    "Alan",
+    "Burt",
+    "Gabe",
+    "Kevin",
+    "Morgan",
+    "Nick",
+    "Tanner",
+    "Terminator"
+  ],
+  "ftp": {
+    "max_threads_probe": 6
+  },
+  "ui": {
+    "font_family": "Segoe UI"
+  }
+}

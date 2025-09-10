@@ -44,7 +44,8 @@ from ezdxf.addons import Importer
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QVBoxLayout, QHBoxLayout, QPushButton,
-    QFileDialog, QMessageBox, QInputDialog, QComboBox, QLineEdit, QDialog, QDialogButtonBox, QTextEdit, QFrame
+    QFileDialog, QMessageBox, QInputDialog, QComboBox, QLineEdit, QDialog, QDialogButtonBox, QTextEdit, QFrame,
+    QFormLayout, QGroupBox, QScrollArea, QSpinBox, QCheckBox
 )
 from PyQt5.QtGui import QPixmap, QFont, QPalette, QColor, QDragEnterEvent, QDropEvent
 from PyQt5.QtCore import Qt, QMimeData, QSize, pyqtSignal
@@ -720,6 +721,207 @@ def send_html_email(project_name, client_name, date, employee_name, first_link, 
 # --------------------
 # PyQt Custom Widgets
 # --------------------
+class ConfigDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("SIM Configuration")
+        self.setMinimumSize(800, 600)
+        self.setModal(True)
+        
+        # Create scroll area for the form
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        
+        # Create main widget for scroll area
+        main_widget = QWidget()
+        main_layout = QVBoxLayout(main_widget)
+        
+        # Create form groups
+        self.create_paths_group(main_layout)
+        self.create_site_group(main_layout)
+        self.create_images_group(main_layout)
+        self.create_employees_group(main_layout)
+        self.create_ftp_group(main_layout)
+        self.create_ui_group(main_layout)
+        
+        # Add scroll area to main layout
+        layout = QVBoxLayout(self)
+        layout.addWidget(scroll)
+        scroll.setWidget(main_widget)
+        
+        # Add buttons
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.save_config)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        
+        # Load default values
+        self.load_defaults()
+    
+    def create_paths_group(self, layout):
+        group = QGroupBox("Paths")
+        form = QFormLayout(group)
+        
+        self.master_dxf = QLineEdit()
+        self.master_dxf.setPlaceholderText("Path to master DXF file")
+        form.addRow("Master DXF:", self.master_dxf)
+        
+        self.output_root = QLineEdit()
+        self.output_root.setPlaceholderText("Output directory root")
+        form.addRow("Output Root:", self.output_root)
+        
+        self.templates_dir = QLineEdit()
+        self.templates_dir.setPlaceholderText("Templates directory")
+        form.addRow("Templates Dir:", self.templates_dir)
+        
+        self.photo_counter = QLineEdit()
+        self.photo_counter.setPlaceholderText("Photo counter file path")
+        form.addRow("Photo Counter:", self.photo_counter)
+        
+        self.stateplane_shapefile = QLineEdit()
+        self.stateplane_shapefile.setPlaceholderText("State plane shapefile path")
+        form.addRow("State Plane Shapefile:", self.stateplane_shapefile)
+        
+        self.recipients_file = QLineEdit()
+        self.recipients_file.setPlaceholderText("Email recipients file path")
+        form.addRow("Recipients File:", self.recipients_file)
+        
+        self.temp_root = QLineEdit()
+        self.temp_root.setPlaceholderText("Temporary files directory")
+        form.addRow("Temp Root:", self.temp_root)
+        
+        self.env_path = QLineEdit()
+        self.env_path.setPlaceholderText("Path to .env file")
+        form.addRow("Environment File:", self.env_path)
+        
+        layout.addWidget(group)
+    
+    def create_site_group(self, layout):
+        group = QGroupBox("Site Settings")
+        form = QFormLayout(group)
+        
+        self.domain_base = QLineEdit()
+        self.domain_base.setPlaceholderText("Base domain URL")
+        form.addRow("Domain Base:", self.domain_base)
+        
+        self.domain_prefix = QLineEdit()
+        self.domain_prefix.setPlaceholderText("Domain prefix path")
+        form.addRow("Domain Prefix:", self.domain_prefix)
+        
+        layout.addWidget(group)
+    
+    def create_images_group(self, layout):
+        group = QGroupBox("Image Settings")
+        form = QFormLayout(group)
+        
+        self.max_width = QSpinBox()
+        self.max_width.setRange(1000, 20000)
+        self.max_width.setValue(8192)
+        form.addRow("Max Width:", self.max_width)
+        
+        self.compress_quality = QSpinBox()
+        self.compress_quality.setRange(1, 100)
+        self.compress_quality.setValue(30)
+        form.addRow("Compress Quality:", self.compress_quality)
+        
+        layout.addWidget(group)
+    
+    def create_employees_group(self, layout):
+        group = QGroupBox("Employee Names")
+        form = QFormLayout(group)
+        
+        self.employees = QTextEdit()
+        self.employees.setMaximumHeight(100)
+        self.employees.setPlaceholderText("Enter employee names, one per line")
+        form.addRow("Employees:", self.employees)
+        
+        layout.addWidget(group)
+    
+    def create_ftp_group(self, layout):
+        group = QGroupBox("FTP Settings")
+        form = QFormLayout(group)
+        
+        self.ftp_max_threads = QSpinBox()
+        self.ftp_max_threads.setRange(1, 20)
+        self.ftp_max_threads.setValue(6)
+        form.addRow("Max FTP Threads:", self.ftp_max_threads)
+        
+        layout.addWidget(group)
+    
+    def create_ui_group(self, layout):
+        group = QGroupBox("UI Settings")
+        form = QFormLayout(group)
+        
+        self.font_family = QLineEdit()
+        self.font_family.setPlaceholderText("Font family name")
+        form.addRow("Font Family:", self.font_family)
+        
+        layout.addWidget(group)
+    
+    def load_defaults(self):
+        """Load default configuration values"""
+        self.master_dxf.setText("./master.dxf")
+        self.output_root.setText("./output")
+        self.templates_dir.setText("./templates")
+        self.photo_counter.setText("./_ROLLING_COUNT/photo_counter.txt")
+        self.stateplane_shapefile.setText("./NAD83SPCEPSG.shp")
+        self.recipients_file.setText("./email_recipients.txt")
+        self.temp_root.setText("./panoTemp")
+        self.env_path.setText("./.env")
+        
+        self.domain_base.setText("https://www.seihds.com")
+        self.domain_prefix.setText("/auto")
+        
+        self.max_width.setValue(8192)
+        self.compress_quality.setValue(30)
+        
+        self.employees.setPlainText("Alan\nBurt\nGabe\nKevin\nMorgan\nNick\nTanner")
+        
+        self.ftp_max_threads.setValue(6)
+        
+        self.font_family.setText("Segoe UI")
+    
+    def save_config(self):
+        """Save configuration to JSON file"""
+        config = {
+            "paths": {
+                "master_dxf": self.master_dxf.text().strip(),
+                "output_root": self.output_root.text().strip(),
+                "templates_dir": self.templates_dir.text().strip(),
+                "photo_counter": self.photo_counter.text().strip(),
+                "stateplane_shapefile": self.stateplane_shapefile.text().strip(),
+                "recipients_file": self.recipients_file.text().strip(),
+                "temp_root": self.temp_root.text().strip()
+            },
+            "env_path": self.env_path.text().strip(),
+            "site": {
+                "domain_base": self.domain_base.text().strip(),
+                "domain_prefix": self.domain_prefix.text().strip()
+            },
+            "images": {
+                "max_width": self.max_width.value(),
+                "compress_quality": self.compress_quality.value()
+            },
+            "employees": [name.strip() for name in self.employees.toPlainText().split('\n') if name.strip()],
+            "ftp": {
+                "max_threads_probe": self.ftp_max_threads.value()
+            },
+            "ui": {
+                "font_family": self.font_family.text().strip()
+            }
+        }
+        
+        # Save to config.json in the same directory as the script
+        config_path = Path(__file__).parent / "config.json"
+        try:
+            with open(config_path, "w", encoding="utf-8") as f:
+                json.dump(config, f, indent=2, ensure_ascii=False)
+            QMessageBox.information(self, "Success", f"Configuration saved to {config_path}")
+            self.accept()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to save configuration: {e}")
+
 class NameDialog(QDialog):
     def __init__(self, possible_names, parent=None):
         super().__init__(parent)
@@ -984,10 +1186,58 @@ def main():
     palette = app.palette()
     palette.setColor(QPalette.Window, QColor("#ffffff"))
     app.setPalette(palette)
+    
+    # Check if config file exists
+    config_path = find_config_path()
+    if not config_path:
+        # Show configuration dialog
+        config_dialog = ConfigDialog()
+        if config_dialog.exec_() == QDialog.Accepted:
+            # Reload configuration after saving
+            global CONFIG
+            CONFIG = load_config()
+            # Re-initialize global variables with new config
+            reinitialize_globals()
+        else:
+            # User cancelled, exit application
+            sys.exit(0)
+    
     app.setFont(QFont(SUNRISE_FONT, 10))
     window = Pano2DWGApp()
     window.show()
     sys.exit(app.exec_())
+
+def reinitialize_globals():
+    """Re-initialize global variables after config reload"""
+    global MASTER_DXF, OUTPUT_ROOT, TEMPLATES_DIR, PHOTO_COUNTER_PATH
+    global STATEPLANE_SHAPEFILE, RECIPIENTS_FILE, TEMP_ROOT
+    global DOMAIN_BASE, DOMAIN_PREFIX, MAX_WIDTH, DEFAULT_JPEG_QUALITY
+    global EMPLOYEE_NAMES, FTP_MAX_THREADS, SUNRISE_FONT, HEADER_FONT, SUBHEADER_FONT, BODY_FONT
+    
+    # Re-initialize paths and settings from JSON
+    MASTER_DXF = Path(cfg_get(CONFIG, "paths.master_dxf", "")).expanduser()
+    OUTPUT_ROOT = Path(cfg_get(CONFIG, "paths.output_root", "./output")).expanduser()
+    TEMPLATES_DIR = Path(cfg_get(CONFIG, "paths.templates_dir", "./templates")).expanduser()
+    PHOTO_COUNTER_PATH = Path(cfg_get(CONFIG, "paths.photo_counter", "./_ROLLING_COUNT/photo_counter.txt")).expanduser()
+    STATEPLANE_SHAPEFILE = Path(cfg_get(CONFIG, "paths.stateplane_shapefile", "./NAD83SPCEPSG.shp")).expanduser()
+    RECIPIENTS_FILE = Path(cfg_get(CONFIG, "paths.recipients_file", "./email_recipients.txt")).expanduser()
+    TEMP_ROOT = Path(cfg_get(CONFIG, "paths.temp_root", "./panoTemp")).expanduser()
+    
+    DOMAIN_BASE = cfg_get(CONFIG, "site.domain_base", "https://www.seihds.com")
+    DOMAIN_PREFIX = cfg_get(CONFIG, "site.domain_prefix", "/auto")
+    
+    MAX_WIDTH = int(cfg_get(CONFIG, "images.max_width", 8192))
+    DEFAULT_JPEG_QUALITY = int(cfg_get(CONFIG, "images.compress_quality", 30))
+    
+    EMPLOYEE_NAMES = list(cfg_get(CONFIG, "employees", ["Alan", "Burt", "Gabe", "Kevin", "Morgan", "Nick", "Tanner"]))
+    
+    FTP_MAX_THREADS = int(cfg_get(CONFIG, "ftp.max_threads_probe", 6))
+    
+    # Re-initialize UI constants
+    SUNRISE_FONT = cfg_get(CONFIG, "ui.font_family", "Segoe UI")
+    HEADER_FONT = QFont(SUNRISE_FONT, 16, QFont.Bold)
+    SUBHEADER_FONT = QFont(SUNRISE_FONT, 12, QFont.Bold)
+    BODY_FONT = QFont(SUNRISE_FONT, 10)
 
 if __name__ == "__main__":
     main()
