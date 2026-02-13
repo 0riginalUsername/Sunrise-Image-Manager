@@ -106,9 +106,9 @@ TEMP_ROOT = Path("C:/panoTemp")  # All temp subfolders go here
 # ---- UTILITY FUNCTIONS ----
 def validate_ftp_credentials():
     if not FTP_SERVER or not FTP_USERNAME or not FTP_PASSWORD:
-        logging.error("🚨 FTP credentials are missing or incomplete. Check your .env file.")
+        logging.error("[ERROR] FTP credentials are missing or incomplete. Check your .env file.")
         return False
-    logging.info(f"✅ FTP credentials loaded: server={FTP_SERVER}, username={FTP_USERNAME}")
+    logging.info(f"[SUCCESS] FTP credentials loaded: server={FTP_SERVER}, username={FTP_USERNAME}")
     return True
 
 

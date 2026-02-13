@@ -1,0 +1,45 @@
+{
+  "env_path": "Z:/Survey/UT/_Scripts/SunrisePhoto/resources/.env",
+  "paths": {
+    "output_root": "Z:/Survey/UT/ScriptFiles",
+    "templates_dir": "Z:/Survey/UT/_Scripts/SunrisePhoto/resources",
+    "master_dxf": "Z:/Survey/UT/_Scripts/SunrisePhoto/resources/master.dxf",
+    "stateplane_shapefile": "Z:/Survey/UT/_Scripts/SunrisePhoto/resources/NAD83SPCEPSG.shp",
+    "photo_counter": "Z:/Survey/UT/ScriptFiles/_ROLLING_COUNT/photo_counter.txt",
+    "temp_root": "C:/panoTemp",
+    "recipients_file": "Z:/Survey/UT/_Scripts/SunrisePhoto/resources/email_recipients.txt",
+    "access_json": "Z:/Survey/UT/_Scripts/SunrisePhoto/resources/access.json"
+  },
+  "site": {
+    "domain_base": "https://www.seihds.com",
+    "domain_prefix": "/auto"
+  },
+  "images": {
+    "max_width": 8192,
+    "compress_quality": 30
+  },
+  "ui": {
+    "font_family": "Segoe UI"
+  },
+  "ftp": {
+    "max_threads_probe": 6
+  },
+  "upload": {
+    "use_s3": true,
+    "s3_bucket": "www.seihds.com",
+    "s3_prefix": "auto",
+    "s3_max_threads": 6
+  },
+  "keyring": {
+    "service_name": "sunrise_photo_manager"
+  },
+  "employees": [
+    "Alan",
+    "Burt",
+    "Gabe",
+    "Kevin",
+    "Morgan",
+    "Nick",
+    "Tanner"
+  ]
+}
