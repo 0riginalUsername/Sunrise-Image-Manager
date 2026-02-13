@@ -63,13 +63,21 @@ def handle_create_job(event):
     """
     Create a new processing job.
 
-    Expects JSON body:
+    Expects JSON body with pre-classified lists:
     {
         "client_name": "...",
         "project_name": "...",
         "employee_name": "...",
-        "pano_files": ["file1.jpg", "file2.jpg"],
-        "photo_files": ["file3.jpg", "file4.jpg"]
+        "pano_files": ["pano1.jpg", ...],
+        "photo_files": ["photo1.jpg", ...]
+    }
+
+    Or a flat list (the processing Lambda will auto-classify by aspect ratio):
+    {
+        "client_name": "...",
+        "project_name": "...",
+        "employee_name": "...",
+        "image_files": ["any1.jpg", "any2.jpg", ...]
     }
 
     Returns presigned URLs for each file so the browser can upload directly to S3.
@@ -84,38 +92,36 @@ def handle_create_job(event):
     employee_name = body.get("employee_name", "").strip()
     pano_files = body.get("pano_files", [])
     photo_files = body.get("photo_files", [])
+    image_files = body.get("image_files", [])
 
     if not client_name or not project_name or not employee_name:
         return cors_response(400, {"error": "client_name, project_name, and employee_name are required"})
 
-    if not pano_files and not photo_files:
-        return cors_response(400, {"error": "At least one pano or photo file is required"})
+    if not pano_files and not photo_files and not image_files:
+        return cors_response(400, {"error": "At least one image file is required"})
 
     file_dt = datetime.utcnow().strftime("%d%b%y_%I-%M%p")
     job_prefix = f"uploads/{client_name}/{project_name}/{file_dt}/"
 
-    # Generate presigned PUT URLs for each file
-    pano_uploads = []
-    for fname in pano_files:
-        safe_name = fname.replace(" ", "_")
-        key = f"{job_prefix}raw/pano/{safe_name}"
-        url = s3.generate_presigned_url(
-            "put_object",
-            Params={"Bucket": BUCKET, "Key": key, "ContentType": "image/jpeg"},
-            ExpiresIn=PRESIGN_EXPIRY,
-        )
-        pano_uploads.append({"filename": fname, "key": key, "upload_url": url})
+    def make_uploads(filenames, subdir):
+        uploads = []
+        for fname in filenames:
+            safe_name = fname.replace(" ", "_")
+            key = f"{job_prefix}raw/{subdir}/{safe_name}"
+            url = s3.generate_presigned_url(
+                "put_object",
+                Params={"Bucket": BUCKET, "Key": key, "ContentType": "image/jpeg"},
+                ExpiresIn=PRESIGN_EXPIRY,
+            )
+            uploads.append({"filename": fname, "key": key, "upload_url": url})
+        return uploads
 
-    photo_uploads = []
-    for fname in photo_files:
-        safe_name = fname.replace(" ", "_")
-        key = f"{job_prefix}raw/photo/{safe_name}"
-        url = s3.generate_presigned_url(
-            "put_object",
-            Params={"Bucket": BUCKET, "Key": key, "ContentType": "image/jpeg"},
-            ExpiresIn=PRESIGN_EXPIRY,
-        )
-        photo_uploads.append({"filename": fname, "key": key, "upload_url": url})
+    # Generate presigned PUT URLs for each file
+    pano_uploads = make_uploads(pano_files, "pano")
+    photo_uploads = make_uploads(photo_files, "photo")
+
+    # Flat image_files go to raw/ (unclassified) — handler will auto-classify
+    image_uploads = make_uploads(image_files, "images")
 
     return cors_response(200, {
         "job_prefix": job_prefix,
@@ -125,6 +131,7 @@ def handle_create_job(event):
         "employee_name": employee_name,
         "pano_uploads": pano_uploads,
         "photo_uploads": photo_uploads,
+        "image_uploads": image_uploads,
     })
 
 
@@ -141,7 +148,8 @@ def handle_submit_job(event):
         "employee_name": "...",
         "file_dt": "...",
         "pano_keys": ["uploads/.../raw/pano/file1.jpg", ...],
-        "photo_keys": ["uploads/.../raw/photo/file3.jpg", ...]
+        "photo_keys": ["uploads/.../raw/photo/file3.jpg", ...],
+        "image_keys": ["uploads/.../raw/images/any.jpg", ...]  (optional, auto-classified)
     }
     """
     try:
@@ -160,6 +168,7 @@ def handle_submit_job(event):
         "file_dt": body.get("file_dt", ""),
         "pano_keys": body.get("pano_keys", []),
         "photo_keys": body.get("photo_keys", []),
+        "image_keys": body.get("image_keys", []),
         "submitted_at": datetime.utcnow().isoformat() + "Z",
     }
 

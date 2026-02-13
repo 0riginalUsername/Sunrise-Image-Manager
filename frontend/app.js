@@ -2,106 +2,135 @@
  * Sunrise Image Manager - Web Frontend
  *
  * Handles:
- *  1. Drag-and-drop / file picker for pano + photo JPGs
- *  2. Requests presigned S3 upload URLs from the API
- *  3. Uploads files directly to S3 from the browser
- *  4. Submits a job manifest to trigger Lambda processing
- *  5. Polls for job completion status
+ *  1. Drag-and-drop / file picker for JPG images (any mix of pano + photo)
+ *  2. Auto-classifies images as panoramic (aspect ratio >= 1.9) or standard
+ *  3. Requests presigned S3 upload URLs from the API
+ *  4. Uploads files directly to S3 from the browser
+ *  5. Submits a job manifest to trigger Lambda processing
+ *  6. Polls for job completion status
  */
 
 // ── Configuration ──────────────────────────────────────────────────────────
-// Set this to your deployed API Gateway base URL
 const API_BASE = window.SIM_CONFIG?.apiBase || '/api';
+const PANO_ASPECT_RATIO = 1.9;  // width/height >= this ⇒ panoramic
 
 // ── State ──────────────────────────────────────────────────────────────────
-let panoFiles = [];
-let photoFiles = [];
+// Each entry: { file: File, type: 'pano'|'photo'|'classifying' }
+let imageFiles = [];
 
 // ── DOM refs ───────────────────────────────────────────────────────────────
-const panoDropZone   = document.getElementById('panoDropZone');
-const photoDropZone  = document.getElementById('photoDropZone');
-const panoInput      = document.getElementById('panoInput');
-const photoInput     = document.getElementById('photoInput');
-const panoFileList   = document.getElementById('panoFileList');
-const photoFileList  = document.getElementById('photoFileList');
-const processBtn     = document.getElementById('processBtn');
-const progressSection = document.getElementById('progressSection');
-const progressBar    = document.getElementById('progressBar');
-const statusText     = document.getElementById('statusText');
-const resultSection  = document.getElementById('resultSection');
-const resultMessage  = document.getElementById('resultMessage');
-const resultLink     = document.getElementById('resultLink');
+const dropZone           = document.getElementById('dropZone');
+const fileInput          = document.getElementById('fileInput');
+const fileListEl         = document.getElementById('fileList');
+const classificationEl   = document.getElementById('classificationSummary');
+const processBtn         = document.getElementById('processBtn');
+const progressSection    = document.getElementById('progressSection');
+const progressBar        = document.getElementById('progressBar');
+const statusText         = document.getElementById('statusText');
+const resultSection      = document.getElementById('resultSection');
+const resultMessage      = document.getElementById('resultMessage');
+const resultLink         = document.getElementById('resultLink');
 
-// ── Drop zone wiring ──────────────────────────────────────────────────────
-function setupDropZone(zone, input, fileListEl, getFiles, setFiles) {
-    // Prevent default drag behavior on the whole zone
-    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(evt => {
-        zone.addEventListener(evt, e => { e.preventDefault(); e.stopPropagation(); });
-    });
-    zone.addEventListener('dragenter', () => zone.classList.add('dragover'));
-    zone.addEventListener('dragover',  () => zone.classList.add('dragover'));
-    zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
-    zone.addEventListener('drop', e => {
-        zone.classList.remove('dragover');
-        const dropped = Array.from(e.dataTransfer.files).filter(f =>
-            f.name.toLowerCase().endsWith('.jpg') || f.name.toLowerCase().endsWith('.jpeg')
-        );
-        if (dropped.length) {
-            setFiles(dropped);
-            renderFileList(fileListEl, getFiles(), setFiles);
-            zone.classList.add('has-files');
-        }
-    });
-
-    // File input change
-    input.addEventListener('change', () => {
-        const picked = Array.from(input.files).filter(f =>
-            f.name.toLowerCase().endsWith('.jpg') || f.name.toLowerCase().endsWith('.jpeg')
-        );
-        if (picked.length) {
-            setFiles(picked);
-            renderFileList(fileListEl, getFiles(), setFiles);
-            zone.classList.add('has-files');
-        }
+// ── Auto-classification ──────────────────────────────────────────────────
+/**
+ * Read image dimensions and return 'pano' or 'photo'.
+ * Equirectangular panoramas have a 2:1 aspect ratio; we use >= 1.9 as
+ * the threshold to allow for minor cropping while excluding 16:9 (1.78).
+ */
+function classifyImage(file) {
+    return new Promise(resolve => {
+        const url = URL.createObjectURL(file);
+        const img = new Image();
+        img.onload = () => {
+            const ratio = img.width / img.height;
+            URL.revokeObjectURL(url);
+            resolve(ratio >= PANO_ASPECT_RATIO ? 'pano' : 'photo');
+        };
+        img.onerror = () => {
+            URL.revokeObjectURL(url);
+            resolve('photo');  // default to photo on error
+        };
+        img.src = url;
     });
 }
 
-function renderFileList(container, files, setFiles) {
-    container.innerHTML = '';
-    files.forEach((file, idx) => {
+async function classifyFiles(files) {
+    const entries = files.map(f => ({ file: f, type: 'classifying' }));
+    // Classify all in parallel
+    const types = await Promise.all(files.map(f => classifyImage(f)));
+    types.forEach((type, i) => { entries[i].type = type; });
+    return entries;
+}
+
+// ── Drop zone wiring ────────────────────────────────────────────────────
+['dragenter', 'dragover', 'dragleave', 'drop'].forEach(evt => {
+    dropZone.addEventListener(evt, e => { e.preventDefault(); e.stopPropagation(); });
+});
+dropZone.addEventListener('dragenter', () => dropZone.classList.add('dragover'));
+dropZone.addEventListener('dragover',  () => dropZone.classList.add('dragover'));
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+
+dropZone.addEventListener('drop', async e => {
+    dropZone.classList.remove('dragover');
+    const dropped = Array.from(e.dataTransfer.files).filter(f =>
+        f.name.toLowerCase().endsWith('.jpg') || f.name.toLowerCase().endsWith('.jpeg')
+    );
+    if (dropped.length) {
+        const newEntries = await classifyFiles(dropped);
+        imageFiles = imageFiles.concat(newEntries);
+        renderFileList();
+    }
+});
+
+fileInput.addEventListener('change', async () => {
+    const picked = Array.from(fileInput.files).filter(f =>
+        f.name.toLowerCase().endsWith('.jpg') || f.name.toLowerCase().endsWith('.jpeg')
+    );
+    if (picked.length) {
+        const newEntries = await classifyFiles(picked);
+        imageFiles = imageFiles.concat(newEntries);
+        renderFileList();
+    }
+});
+
+// ── File list rendering ─────────────────────────────────────────────────
+function renderFileList() {
+    fileListEl.innerHTML = '';
+
+    if (imageFiles.length > 0) {
+        dropZone.classList.add('has-files');
+    } else {
+        dropZone.classList.remove('has-files');
+    }
+
+    const panoCnt = imageFiles.filter(e => e.type === 'pano').length;
+    const photoCnt = imageFiles.filter(e => e.type === 'photo').length;
+    if (imageFiles.length > 0) {
+        classificationEl.textContent = `${panoCnt} panoramic, ${photoCnt} standard photo${photoCnt !== 1 ? 's' : ''} (${imageFiles.length} total)`;
+    } else {
+        classificationEl.textContent = '';
+    }
+
+    imageFiles.forEach((entry, idx) => {
         const div = document.createElement('div');
         div.className = 'file-item';
-        const sizeMB = (file.size / (1024 * 1024)).toFixed(1);
+        const sizeMB = (entry.file.size / (1024 * 1024)).toFixed(1);
+        const badgeClass = entry.type === 'pano' ? 'badge-pano' : 'badge-photo';
+        const badgeLabel = entry.type === 'pano' ? 'PANO' : 'PHOTO';
         div.innerHTML = `
-            <span>${file.name} (${sizeMB} MB)</span>
+            <span>${entry.file.name} (${sizeMB} MB)<span class="file-type-badge ${badgeClass}">${badgeLabel}</span></span>
             <button class="remove-btn" title="Remove">&times;</button>
         `;
         div.querySelector('.remove-btn').addEventListener('click', e => {
             e.stopPropagation();
-            const newFiles = [...files];
-            newFiles.splice(idx, 1);
-            setFiles(newFiles);
-            renderFileList(container, newFiles, setFiles);
-            if (newFiles.length === 0) {
-                container.closest('.drop-zone').classList.remove('has-files');
-            }
+            imageFiles.splice(idx, 1);
+            renderFileList();
         });
-        container.appendChild(div);
+        fileListEl.appendChild(div);
     });
 }
 
-setupDropZone(
-    panoDropZone, panoInput, panoFileList,
-    () => panoFiles,
-    files => { panoFiles = files; }
-);
-setupDropZone(
-    photoDropZone, photoInput, photoFileList,
-    () => photoFiles,
-    files => { photoFiles = files; }
-);
-
-// ── Progress helpers ──────────────────────────────────────────────────────
+// ── Progress helpers ────────────────────────────────────────────────────
 function showProgress() {
     progressSection.classList.add('visible');
     resultSection.classList.remove('visible');
@@ -125,7 +154,7 @@ function showResult(message, link) {
     }
 }
 
-// ── Main processing flow ──────────────────────────────────────────────────
+// ── Main processing flow ────────────────────────────────────────────────
 async function startProcessing() {
     const clientName   = document.getElementById('clientName').value.trim();
     const projectName  = document.getElementById('projectName').value.trim();
@@ -135,10 +164,13 @@ async function startProcessing() {
     if (!clientName) { alert('Please enter a client name.'); return; }
     if (!projectName) { alert('Please enter a project name.'); return; }
     if (!employeeName) { alert('Please select an employee.'); return; }
-    if (panoFiles.length === 0 && photoFiles.length === 0) {
-        alert('Please add at least one panoramic or standard photo.');
+    if (imageFiles.length === 0) {
+        alert('Please add at least one image.');
         return;
     }
+
+    const panoEntries = imageFiles.filter(e => e.type === 'pano');
+    const photoEntries = imageFiles.filter(e => e.type === 'photo');
 
     processBtn.disabled = true;
     showProgress();
@@ -153,8 +185,8 @@ async function startProcessing() {
                 client_name: clientName,
                 project_name: projectName,
                 employee_name: employeeName,
-                pano_files: panoFiles.map(f => f.name),
-                photo_files: photoFiles.map(f => f.name),
+                pano_files: panoEntries.map(e => e.file.name),
+                photo_files: photoEntries.map(e => e.file.name),
             }),
         });
 
@@ -168,8 +200,8 @@ async function startProcessing() {
 
         // Step 2: Upload all files directly to S3 via presigned URLs
         const allUploads = [
-            ...jobData.pano_uploads.map((u, i) => ({ ...u, file: panoFiles[i] })),
-            ...jobData.photo_uploads.map((u, i) => ({ ...u, file: photoFiles[i] })),
+            ...jobData.pano_uploads.map((u, i) => ({ ...u, file: panoEntries[i].file })),
+            ...jobData.photo_uploads.map((u, i) => ({ ...u, file: photoEntries[i].file })),
         ];
 
         const totalFiles = allUploads.length;
@@ -228,7 +260,7 @@ async function startProcessing() {
         statusText.className = 'status-text success';
 
         showResult(
-            `All images processed and published. ${panoFiles.length} panoramas and ${photoFiles.length} photos.`,
+            `All images processed and published. ${panoEntries.length} panoramas and ${photoEntries.length} photos.`,
             result.first_link || null
         );
 

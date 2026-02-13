@@ -97,14 +97,8 @@
             box-shadow: 0 0 0 2px rgba(17,62,89,0.12);
         }
 
-        /* ── Drop zones ── */
-        .drop-zones {
-            display: flex;
-            gap: 24px;
-            margin-bottom: 24px;
-        }
+        /* ── Drop zone ── */
         .drop-zone {
-            flex: 1;
             background: var(--sunrise-white);
             border: 2px dashed var(--sunrise-navy);
             border-radius: 12px;
@@ -118,6 +112,7 @@
             align-items: center;
             justify-content: center;
             position: relative;
+            margin-bottom: 24px;
         }
         .drop-zone:hover,
         .drop-zone.dragover {
@@ -151,7 +146,7 @@
         }
         .file-list {
             margin-top: 12px;
-            max-height: 180px;
+            max-height: 300px;
             overflow-y: auto;
             width: 100%;
             text-align: left;
@@ -174,6 +169,29 @@
             cursor: pointer;
             font-size: 14px;
             padding: 0 4px;
+        }
+        .file-type-badge {
+            display: inline-block;
+            font-size: 10px;
+            font-weight: 700;
+            padding: 2px 6px;
+            border-radius: 3px;
+            margin-left: 6px;
+            white-space: nowrap;
+        }
+        .badge-pano {
+            background: var(--sunrise-navy);
+            color: var(--sunrise-white);
+        }
+        .badge-photo {
+            background: var(--sunrise-yellow);
+            color: var(--sunrise-navy);
+        }
+        .classification-summary {
+            font-size: 13px;
+            color: var(--sunrise-navy);
+            margin-top: 8px;
+            font-weight: 600;
         }
 
         /* ── Process button ── */
@@ -281,7 +299,6 @@
 
         /* ── Responsive ── */
         @media (max-width: 768px) {
-            .drop-zones { flex-direction: column; }
             .form-row { flex-direction: column; }
         }
     </style>
@@ -324,22 +341,14 @@
             </div>
         </div>
 
-        <!-- Drop Zones -->
-        <div class="drop-zones">
-            <div class="drop-zone" id="panoDropZone">
-                <div class="drop-icon">&#x1F5BC;</div>
-                <h3>Drop Panoramic Photos Here</h3>
-                <p>or click to browse (.jpg files)</p>
-                <input type="file" id="panoInput" multiple accept=".jpg,.jpeg">
-                <div class="file-list" id="panoFileList"></div>
-            </div>
-            <div class="drop-zone" id="photoDropZone">
-                <div class="drop-icon">&#x1F4F7;</div>
-                <h3>Drop Standard Photos Here</h3>
-                <p>or click to browse (.jpg files)</p>
-                <input type="file" id="photoInput" multiple accept=".jpg,.jpeg">
-                <div class="file-list" id="photoFileList"></div>
-            </div>
+        <!-- Drop Zone (unified — auto-classifies pano vs photo) -->
+        <div class="drop-zone" id="dropZone">
+            <div class="drop-icon">&#x1F4F7;</div>
+            <h3>Drop All Images Here</h3>
+            <p>Panoramas and standard photos are detected automatically (.jpg files)</p>
+            <input type="file" id="fileInput" multiple accept=".jpg,.jpeg">
+            <div class="classification-summary" id="classificationSummary"></div>
+            <div class="file-list" id="fileList"></div>
         </div>
 
         <!-- Process Button -->

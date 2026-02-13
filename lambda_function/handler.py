@@ -56,6 +56,7 @@ DOMAIN_BASE = os.environ.get("DOMAIN_BASE", "https://www.seihds.com")
 DOMAIN_PREFIX = os.environ.get("DOMAIN_PREFIX", "/auto")
 MAX_WIDTH = int(os.environ.get("MAX_WIDTH", "8192"))
 DEFAULT_JPEG_QUALITY = int(os.environ.get("JPEG_QUALITY", "30"))
+PANO_ASPECT_RATIO = float(os.environ.get("PANO_ASPECT_RATIO", "1.9"))
 COUNTER_KEY = os.environ.get("COUNTER_KEY", "state/photo_counter.json")
 EMAIL_HOST = os.environ.get("EMAIL_HOST", "")
 EMAIL_PORT = int(os.environ.get("EMAIL_PORT", "587"))
@@ -155,6 +156,20 @@ def extract_image_metadata(image_bytes):
     except Exception as e:
         logger.warning("Metadata extraction failed: %s", e)
     return lat, lon, alt, date_time
+
+
+def classify_image_type(image_bytes):
+    """Classify image as 'pano' or 'photo' based on aspect ratio.
+
+    Equirectangular panoramas have a ~2:1 aspect ratio.  Images with
+    width/height >= PANO_ASPECT_RATIO (default 1.9) are classified as pano.
+    """
+    try:
+        with Image.open(io.BytesIO(image_bytes)) as img:
+            ratio = img.width / img.height
+            return "pano" if ratio >= PANO_ASPECT_RATIO else "photo"
+    except Exception:
+        return "photo"
 
 
 # ---------------------------------------------------------------------------
@@ -438,7 +453,8 @@ def lambda_handler(event, context):
     """
     Triggered by S3 PUT on uploads/*/manifest.json.
     The manifest contains: client_name, project_name, employee_name, file_dt,
-    and lists of pano_keys / photo_keys (S3 keys of raw uploaded images).
+    and lists of pano_keys / photo_keys / image_keys (S3 keys of raw uploaded
+    images).  Images in image_keys are auto-classified by aspect ratio.
     """
     for record in event.get("Records", []):
         bucket = record["s3"]["bucket"]["name"]
@@ -453,8 +469,26 @@ def lambda_handler(event, context):
         project_name = manifest["project_name"]
         employee_name = manifest["employee_name"]
         file_dt = manifest["file_dt"]
-        pano_keys = manifest.get("pano_keys", [])
-        photo_keys = manifest.get("photo_keys", [])
+        pano_keys = list(manifest.get("pano_keys", []))
+        photo_keys = list(manifest.get("photo_keys", []))
+        image_keys = manifest.get("image_keys", [])
+
+        # Auto-classify unclassified images by aspect ratio
+        if image_keys:
+            logger.info("Auto-classifying %d unclassified images", len(image_keys))
+            for key in image_keys:
+                try:
+                    img_obj = s3.get_object(Bucket=bucket, Key=key)
+                    img_bytes = img_obj["Body"].read()
+                    img_type = classify_image_type(img_bytes)
+                    if img_type == "pano":
+                        pano_keys.append(key)
+                    else:
+                        photo_keys.append(key)
+                    logger.info("Classified %s as %s", key.rsplit("/", 1)[-1], img_type)
+                except Exception as e:
+                    logger.warning("Failed to classify %s, defaulting to photo: %s", key, e)
+                    photo_keys.append(key)
 
         job_prefix = f"uploads/{client_name}/{project_name}/{file_dt}/"
         output_prefix = f"processed/{client_name}/{project_name}/{file_dt}/"
