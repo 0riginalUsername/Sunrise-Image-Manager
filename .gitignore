@@ -1,1 +1,9 @@
 .env
+__pycache__/
+*.pyc
+.aws-sam/
+.build/
+frontend/config.js
+node_modules/
+panoTemp/
+output/

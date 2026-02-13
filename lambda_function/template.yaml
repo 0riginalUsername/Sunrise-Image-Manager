@@ -1,0 +1,207 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Sunrise Image Manager - Fully web-based panoramic image processing.
+  Frontend hosted on S3, API via API Gateway + Lambda, image processing via Lambda.
+
+Globals:
+  Function:
+    Timeout: 900
+    MemorySize: 3008
+    Runtime: python3.11
+
+Parameters:
+  S3BucketName:
+    Type: String
+    Default: sunrise-image-manager
+    Description: S3 bucket for uploads, processed output, and static website
+  DomainBase:
+    Type: String
+    Default: https://www.seihds.com
+  DomainPrefix:
+    Type: String
+    Default: /auto
+  MaxWidth:
+    Type: Number
+    Default: 8192
+  JpegQuality:
+    Type: Number
+    Default: 30
+  EmailHost:
+    Type: String
+    Default: ""
+  EmailPort:
+    Type: Number
+    Default: 587
+  EmailUser:
+    Type: String
+    Default: ""
+  EmailPass:
+    Type: String
+    Default: ""
+    NoEcho: true
+  EmailSender:
+    Type: String
+    Default: ""
+  EmailRecipients:
+    Type: String
+    Default: ""
+    Description: Comma-separated email addresses
+  AllowedOrigin:
+    Type: String
+    Default: "*"
+    Description: CORS allowed origin for the API (set to your domain in production)
+
+Resources:
+
+  # ── S3 Bucket (uploads, processed output, static frontend) ──
+  ImageBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref S3BucketName
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: index.html
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders: ["*"]
+            AllowedMethods: [GET, PUT, POST, HEAD]
+            AllowedOrigins: ["*"]
+            MaxAge: 3600
+
+  # Public read policy for the frontend/ and processed/ prefixes
+  BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ImageBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: PublicReadFrontend
+            Effect: Allow
+            Principal: "*"
+            Action: s3:GetObject
+            Resource:
+              - !Sub "arn:aws:s3:::${S3BucketName}/frontend/*"
+              - !Sub "arn:aws:s3:::${S3BucketName}/processed/*"
+
+  # ── API Gateway ──
+  ApiGateway:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: prod
+      Cors:
+        AllowMethods: "'GET,POST,OPTIONS'"
+        AllowHeaders: "'Content-Type'"
+        AllowOrigin: !Sub "'${AllowedOrigin}'"
+
+  # ── API Lambda (job management: create-job, submit-job, job-status) ──
+  ApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: api.lambda_handler
+      CodeUri: .
+      Timeout: 30
+      MemorySize: 256
+      Environment:
+        Variables:
+          S3_BUCKET: !Ref S3BucketName
+          PRESIGN_EXPIRY: "3600"
+          ALLOWED_ORIGIN: !Ref AllowedOrigin
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref S3BucketName
+      Events:
+        CreateJob:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /api/create-job
+            Method: POST
+        SubmitJob:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /api/submit-job
+            Method: POST
+        JobStatus:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /api/job-status
+            Method: GET
+        CorsCreateJob:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /api/create-job
+            Method: OPTIONS
+        CorsSubmitJob:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /api/submit-job
+            Method: OPTIONS
+        CorsJobStatus:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /api/job-status
+            Method: OPTIONS
+
+  # ── Processing Lambda (image compression, HTML gen, CSV, email) ──
+  ProcessingFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: handler.lambda_handler
+      CodeUri: .
+      Environment:
+        Variables:
+          S3_BUCKET: !Ref S3BucketName
+          DOMAIN_BASE: !Ref DomainBase
+          DOMAIN_PREFIX: !Ref DomainPrefix
+          MAX_WIDTH: !Ref MaxWidth
+          JPEG_QUALITY: !Ref JpegQuality
+          COUNTER_KEY: state/photo_counter.json
+          EMAIL_HOST: !Ref EmailHost
+          EMAIL_PORT: !Ref EmailPort
+          EMAIL_USER: !Ref EmailUser
+          EMAIL_PASS: !Ref EmailPass
+          EMAIL_SENDER: !Ref EmailSender
+          EMAIL_RECIPIENTS: !Ref EmailRecipients
+          PANO_TEMPLATE_KEY: templates/Pano-Template.htm
+          IMG_TEMPLATE_KEY: templates/img-Template.htm
+          EMAIL_TEMPLATE_KEY: templates/Email-Report-Template.htm
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref S3BucketName
+      Events:
+        ManifestUpload:
+          Type: S3
+          Properties:
+            Bucket: !Ref ImageBucket
+            Events: s3:ObjectCreated:*
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: uploads/
+                  - Name: suffix
+                    Value: manifest.json
+
+Outputs:
+  BucketName:
+    Value: !Ref ImageBucket
+    Description: S3 bucket name
+  WebsiteURL:
+    Value: !GetAtt ImageBucket.WebsiteURL
+    Description: S3 static website URL for the frontend
+  ApiURL:
+    Value: !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod"
+    Description: API Gateway base URL
+  ProcessingFunctionArn:
+    Value: !GetAtt ProcessingFunction.Arn
+    Description: Processing Lambda ARN
+  ApiFunctionArn:
+    Value: !GetAtt ApiFunction.Arn
+    Description: API Lambda ARN

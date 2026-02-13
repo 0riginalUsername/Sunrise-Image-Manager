@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sunrise Image Manager</title>
+    <link rel='stylesheet' href='https://sunrise-eng.com/wp-content/themes/sunrise-eng-2018/style.min.css?ver=1.0.2' />
+    <link rel="icon" type="image/x-icon" href="favicon.ico">
+    <style>
+        :root {
+            --sunrise-navy: #113e59;
+            --sunrise-gray: #a7a9ac;
+            --sunrise-yellow: #ffd457;
+            --sunrise-ruby: #d2342e;
+            --sunrise-white: #ffffff;
+            --sunrise-light-bg: #f8f9fa;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: 'Segoe UI', 'PT Sans', Arial, sans-serif;
+            background: var(--sunrise-light-bg);
+            color: var(--sunrise-navy);
+            min-height: 100vh;
+        }
+
+        /* ── Top bar ── */
+        .app-top-bar {
+            background: var(--sunrise-navy);
+            padding: 12px 32px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .app-top-bar img { height: 40px; }
+        .app-top-bar h1 {
+            color: var(--sunrise-white);
+            font-size: 18px;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+        }
+
+        /* ── Main container ── */
+        .app-container {
+            max-width: 1100px;
+            margin: 32px auto;
+            padding: 0 24px;
+        }
+
+        /* ── Form section ── */
+        .form-section {
+            background: var(--sunrise-white);
+            border-radius: 12px;
+            padding: 28px 32px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+            margin-bottom: 24px;
+        }
+        .form-section h2 {
+            font-size: 16px;
+            margin-bottom: 18px;
+            color: var(--sunrise-navy);
+            border-bottom: 2px solid var(--sunrise-yellow);
+            padding-bottom: 8px;
+        }
+        .form-row {
+            display: flex;
+            gap: 16px;
+            flex-wrap: wrap;
+            margin-bottom: 12px;
+        }
+        .form-group {
+            flex: 1;
+            min-width: 200px;
+        }
+        .form-group label {
+            display: block;
+            font-size: 13px;
+            font-weight: 600;
+            margin-bottom: 6px;
+            color: var(--sunrise-navy);
+        }
+        .form-group input,
+        .form-group select {
+            width: 100%;
+            padding: 10px 14px;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            font-size: 14px;
+            font-family: inherit;
+            transition: border-color 0.2s;
+        }
+        .form-group input:focus,
+        .form-group select:focus {
+            border-color: var(--sunrise-navy);
+            outline: none;
+            box-shadow: 0 0 0 2px rgba(17,62,89,0.12);
+        }
+
+        /* ── Drop zones ── */
+        .drop-zones {
+            display: flex;
+            gap: 24px;
+            margin-bottom: 24px;
+        }
+        .drop-zone {
+            flex: 1;
+            background: var(--sunrise-white);
+            border: 2px dashed var(--sunrise-navy);
+            border-radius: 12px;
+            padding: 32px 24px;
+            text-align: center;
+            cursor: pointer;
+            transition: background 0.2s, border-color 0.2s;
+            min-height: 200px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+        }
+        .drop-zone:hover,
+        .drop-zone.dragover {
+            background: #eef5fb;
+            border-color: var(--sunrise-yellow);
+        }
+        .drop-zone.has-files {
+            border-style: solid;
+            border-color: #28a745;
+            background: #f0faf3;
+        }
+        .drop-zone h3 {
+            font-size: 15px;
+            margin-bottom: 8px;
+            color: var(--sunrise-navy);
+        }
+        .drop-zone p {
+            font-size: 13px;
+            color: var(--sunrise-gray);
+        }
+        .drop-zone .drop-icon {
+            font-size: 36px;
+            margin-bottom: 12px;
+            opacity: 0.6;
+        }
+        .drop-zone input[type="file"] {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            opacity: 0;
+            cursor: pointer;
+        }
+        .file-list {
+            margin-top: 12px;
+            max-height: 180px;
+            overflow-y: auto;
+            width: 100%;
+            text-align: left;
+            font-size: 12px;
+            color: #555;
+        }
+        .file-list .file-item {
+            padding: 4px 8px;
+            background: #f4f4f4;
+            border-radius: 4px;
+            margin-bottom: 3px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .file-list .file-item .remove-btn {
+            background: none;
+            border: none;
+            color: var(--sunrise-ruby);
+            cursor: pointer;
+            font-size: 14px;
+            padding: 0 4px;
+        }
+
+        /* ── Process button ── */
+        .btn-process {
+            display: block;
+            width: 100%;
+            padding: 16px;
+            background: var(--sunrise-yellow);
+            color: var(--sunrise-navy);
+            font-size: 16px;
+            font-weight: 700;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: opacity 0.2s;
+            letter-spacing: 0.5px;
+        }
+        .btn-process:hover { opacity: 0.85; }
+        .btn-process:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        /* ── Progress section ── */
+        .progress-section {
+            background: var(--sunrise-white);
+            border-radius: 12px;
+            padding: 24px 32px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+            margin-top: 24px;
+            display: none;
+        }
+        .progress-section.visible { display: block; }
+        .progress-section h2 {
+            font-size: 16px;
+            margin-bottom: 14px;
+            color: var(--sunrise-navy);
+        }
+        .progress-bar-container {
+            background: #e9ecef;
+            border-radius: 8px;
+            height: 24px;
+            overflow: hidden;
+            margin-bottom: 12px;
+        }
+        .progress-bar-fill {
+            background: linear-gradient(90deg, var(--sunrise-navy), #1a6b9a);
+            height: 100%;
+            width: 0%;
+            border-radius: 8px;
+            transition: width 0.4s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 12px;
+            font-weight: 600;
+            min-width: 40px;
+        }
+        .status-text {
+            font-size: 14px;
+            color: #555;
+            margin-top: 8px;
+        }
+        .status-text.error { color: var(--sunrise-ruby); }
+        .status-text.success { color: #28a745; }
+
+        /* ── Result section ── */
+        .result-section {
+            background: var(--sunrise-white);
+            border-radius: 12px;
+            padding: 24px 32px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+            margin-top: 24px;
+            display: none;
+        }
+        .result-section.visible { display: block; }
+        .result-section h2 {
+            font-size: 16px;
+            margin-bottom: 12px;
+            color: #28a745;
+            border-bottom: 2px solid #28a745;
+            padding-bottom: 8px;
+        }
+        .result-link {
+            display: inline-block;
+            margin-top: 8px;
+            padding: 10px 20px;
+            background: var(--sunrise-navy);
+            color: white;
+            text-decoration: none;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+        .result-link:hover { opacity: 0.85; }
+
+        /* ── Footer ── */
+        .app-footer {
+            text-align: center;
+            padding: 24px;
+            color: var(--sunrise-gray);
+            font-size: 12px;
+            margin-top: 40px;
+        }
+
+        /* ── Responsive ── */
+        @media (max-width: 768px) {
+            .drop-zones { flex-direction: column; }
+            .form-row { flex-direction: column; }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Top Bar -->
+    <div class="app-top-bar">
+        <img alt="Sunrise logo" src="https://sunrise-eng.com/wp-content/themes/sunrise-eng-2018/assets/img/logo-sunrise-white.svg" />
+        <h1>Pano + Photo Image Manager</h1>
+    </div>
+
+    <div class="app-container">
+
+        <!-- Project Info Form -->
+        <div class="form-section">
+            <h2>Project Information</h2>
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="clientName">Client Name</label>
+                    <input type="text" id="clientName" placeholder="Enter client name" required>
+                </div>
+                <div class="form-group">
+                    <label for="projectName">Project Name</label>
+                    <input type="text" id="projectName" placeholder="Enter project name" required>
+                </div>
+                <div class="form-group">
+                    <label for="employeeName">Employee</label>
+                    <select id="employeeName">
+                        <option value="">Select employee...</option>
+                        <option>Alan</option>
+                        <option>Burt</option>
+                        <option>Gabe</option>
+                        <option>Kevin</option>
+                        <option>Morgan</option>
+                        <option>Nick</option>
+                        <option>Tanner</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+
+        <!-- Drop Zones -->
+        <div class="drop-zones">
+            <div class="drop-zone" id="panoDropZone">
+                <div class="drop-icon">&#x1F5BC;</div>
+                <h3>Drop Panoramic Photos Here</h3>
+                <p>or click to browse (.jpg files)</p>
+                <input type="file" id="panoInput" multiple accept=".jpg,.jpeg">
+                <div class="file-list" id="panoFileList"></div>
+            </div>
+            <div class="drop-zone" id="photoDropZone">
+                <div class="drop-icon">&#x1F4F7;</div>
+                <h3>Drop Standard Photos Here</h3>
+                <p>or click to browse (.jpg files)</p>
+                <input type="file" id="photoInput" multiple accept=".jpg,.jpeg">
+                <div class="file-list" id="photoFileList"></div>
+            </div>
+        </div>
+
+        <!-- Process Button -->
+        <button class="btn-process" id="processBtn" onclick="startProcessing()">
+            Upload &amp; Process All
+        </button>
+
+        <!-- Progress -->
+        <div class="progress-section" id="progressSection">
+            <h2>Processing Status</h2>
+            <div class="progress-bar-container">
+                <div class="progress-bar-fill" id="progressBar">0%</div>
+            </div>
+            <div class="status-text" id="statusText">Preparing upload...</div>
+        </div>
+
+        <!-- Result -->
+        <div class="result-section" id="resultSection">
+            <h2>Processing Complete</h2>
+            <p id="resultMessage"></p>
+            <a class="result-link" id="resultLink" href="#" target="_blank">View First Panorama</a>
+        </div>
+
+    </div>
+
+    <div class="app-footer">
+        Sunrise Engineering &copy; 2025 &mdash; Panoramic Image Management System
+    </div>
+
+    <!-- config.js is auto-generated by deploy.sh with the API URL -->
+    <script src="config.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
