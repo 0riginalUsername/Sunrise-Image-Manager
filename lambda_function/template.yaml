@@ -51,6 +51,13 @@ Parameters:
     Type: String
     Default: "*"
     Description: CORS allowed origin for the API (set to your domain in production)
+  GeoLayerArn:
+    Type: String
+    Default: ""
+    Description: ARN of the geo Lambda Layer (pyproj, geopandas, ezdxf). Leave empty to skip DXF export.
+
+Conditions:
+  HasGeoLayer: !Not [!Equals [!Ref GeoLayerArn, ""]]
 
 Resources:
 
@@ -149,12 +156,16 @@ Resources:
             Path: /api/job-status
             Method: OPTIONS
 
-  # ── Processing Lambda (image compression, HTML gen, CSV, email) ──
+  # ── Processing Lambda (image compression, HTML gen, CSV, DXF, email) ──
   ProcessingFunction:
     Type: AWS::Serverless::Function
     Properties:
       Handler: handler.lambda_handler
       CodeUri: .
+      Layers: !If
+        - HasGeoLayer
+        - [!Ref GeoLayerArn]
+        - !Ref "AWS::NoValue"
       Environment:
         Variables:
           S3_BUCKET: !Ref S3BucketName
@@ -172,6 +183,8 @@ Resources:
           PANO_TEMPLATE_KEY: templates/Pano-Template.htm
           IMG_TEMPLATE_KEY: templates/img-Template.htm
           EMAIL_TEMPLATE_KEY: templates/Email-Report-Template.htm
+          MASTER_DXF_KEY: templates/master.dxf
+          SHAPEFILE_PREFIX: templates/NAD83SPCEPSG
       Policies:
         - S3CrudPolicy:
             BucketName: !Ref S3BucketName

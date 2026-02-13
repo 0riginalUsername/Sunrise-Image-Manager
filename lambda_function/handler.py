@@ -31,6 +31,18 @@ import piexif
 from PIL import Image, ExifTags
 from jinja2 import Environment, BaseLoader
 
+# Optional geo/DXF dependencies — provided by the geo Lambda Layer.
+# If the layer is not attached, DXF export is gracefully skipped.
+try:
+    import ezdxf
+    from ezdxf.addons import Importer
+    import geopandas as gpd
+    from shapely.geometry import Point
+    from pyproj import Transformer
+    HAS_GEO = True
+except ImportError:
+    HAS_GEO = False
+
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
@@ -54,6 +66,8 @@ RECIPIENTS = [r.strip() for r in os.environ.get("EMAIL_RECIPIENTS", "").split(",
 PANO_TEMPLATE_KEY = os.environ.get("PANO_TEMPLATE_KEY", "templates/Pano-Template.htm")
 IMG_TEMPLATE_KEY = os.environ.get("IMG_TEMPLATE_KEY", "templates/img-Template.htm")
 EMAIL_TEMPLATE_KEY = os.environ.get("EMAIL_TEMPLATE_KEY", "templates/Email-Report-Template.htm")
+MASTER_DXF_KEY = os.environ.get("MASTER_DXF_KEY", "templates/master.dxf")
+SHAPEFILE_PREFIX = os.environ.get("SHAPEFILE_PREFIX", "templates/NAD83SPCEPSG")
 
 
 # ---------------------------------------------------------------------------
@@ -257,6 +271,148 @@ def send_email(project_name, client_name, dt_str, employee, first_link, s3_outpu
 
 
 # ---------------------------------------------------------------------------
+# Coordinate projection helpers  (requires geo Lambda Layer)
+# ---------------------------------------------------------------------------
+_shapefile_cache = None
+
+
+def _download_shapefile():
+    """Download the NAD83 State Plane shapefile components from S3 to /tmp."""
+    global _shapefile_cache
+    if _shapefile_cache is not None:
+        return _shapefile_cache
+    tmp = Path(tempfile.gettempdir())
+    for ext in (".shp", ".shx", ".dbf", ".prj", ".cpg"):
+        key = SHAPEFILE_PREFIX + ext
+        local = tmp / ("NAD83SPCEPSG" + ext)
+        if not local.exists():
+            logger.info("Downloading shapefile component: %s", key)
+            s3.download_file(BUCKET, key, str(local))
+    _shapefile_cache = str(tmp / "NAD83SPCEPSG.shp")
+    return _shapefile_cache
+
+
+def meters_to_feet(meters):
+    return meters * (3937 / 1200)
+
+
+def latlon_to_state_plane(lat, lon, alt=None):
+    """Convert WGS84 lat/lon to State Plane coordinates using the NAD83 shapefile."""
+    shp_path = _download_shapefile()
+    zones = gpd.read_file(shp_path)
+    pt = Point(lon, lat)
+    match = zones[zones.contains(pt)]
+    if match.empty:
+        raise ValueError("No State Plane zone found for this location")
+    zone = match.iloc[0]
+    epsg = int(zone["EPSG"])
+    transformer = Transformer.from_crs("EPSG:4326", f"EPSG:{epsg}", always_xy=True)
+    z = meters_to_feet(alt) if alt is not None else 0
+    x, y = transformer.transform(lon, lat)
+    return zone["ZONENAME"], epsg, x, y, z
+
+
+# ---------------------------------------------------------------------------
+# DXF export  (requires geo Lambda Layer)
+# ---------------------------------------------------------------------------
+def export_dxf(bucket, pano_meta, photo_meta, client_name, project_name, file_dt, output_prefix):
+    """
+    Export pano and photo locations to a DXF file using block definitions from
+    master.dxf.  The output is uploaded to S3 under the processed/ prefix.
+    """
+    if not HAS_GEO:
+        logger.info("Geo layer not available; skipping DXF export.")
+        return
+
+    if not pano_meta and not photo_meta:
+        return
+
+    # Download master.dxf from S3 to /tmp
+    tmp = Path(tempfile.gettempdir())
+    master_path = tmp / "master.dxf"
+    if not master_path.exists():
+        logger.info("Downloading master.dxf from s3://%s/%s", BUCKET, MASTER_DXF_KEY)
+        s3.download_file(BUCKET, MASTER_DXF_KEY, str(master_path))
+
+    block_doc = ezdxf.readfile(str(master_path))
+    doc = ezdxf.new(dxfversion="R2018")
+
+    pano_block = "pano"
+    photo_block = "photo"
+    layer_pano = "V-PANO"
+    layer_photo = "V-PHOTO"
+    block_scale = 5.0
+
+    doc.layers.add(name=layer_pano)
+    doc.layers.add(name=layer_photo)
+    msp = doc.modelspace()
+
+    # Import block definitions from master.dxf
+    for meta, block_name in [(pano_meta, pano_block), (photo_meta, photo_block)]:
+        if meta and block_name not in doc.blocks:
+            importer = Importer(block_doc, doc)
+            importer.import_block(block_name)
+            importer.finalize()
+
+    # Determine projection slug from first image with GPS
+    proj_slug = "NoGPS"
+    for meta_list in (pano_meta, photo_meta):
+        for info in meta_list:
+            lat, lon, alt = info.get("lat"), info.get("lon"), info.get("alt")
+            if lat is not None and lon is not None:
+                try:
+                    zone_name, _, _, _, _ = latlon_to_state_plane(lat, lon, alt)
+                    proj_slug = zone_name.replace(" ", "_")
+                    break
+                except Exception:
+                    continue
+        if proj_slug != "NoGPS":
+            break
+
+    domain_path = f"{DOMAIN_PREFIX}/{client_name}/{project_name}/{file_dt}"
+
+    def insert_blocks(meta_list, block_name, layer_name):
+        for info in meta_list:
+            lat, lon, alt = info.get("lat"), info.get("lon"), info.get("alt")
+            if lat is None or lon is None:
+                continue
+            try:
+                _, epsg, x, y, z = latlon_to_state_plane(lat, lon, alt)
+            except Exception as e:
+                logger.warning("Projection fail for %s: %s", info.get("base_name"), e)
+                continue
+            base = info["base_name"].rsplit(".", 1)[0]
+            hyperlink = f"{DOMAIN_BASE}{domain_path}/{base}.htm"
+            block_ref = msp.add_blockref(block_name, (x, y, z), dxfattribs={
+                "layer": layer_name,
+                "xscale": block_scale,
+                "yscale": block_scale,
+                "zscale": block_scale,
+            })
+            block_ref.add_auto_attribs({
+                "###": base,
+                "HYPERLINK": hyperlink,
+            })
+
+    insert_blocks(pano_meta, pano_block, layer_pano)
+    insert_blocks(photo_meta, photo_block, layer_photo)
+
+    # Save DXF to /tmp, then upload to S3
+    dxf_filename = f"{client_name}_{project_name}_{file_dt}_{proj_slug}_PanoPhoto.dxf"
+    local_dxf = tmp / dxf_filename
+    doc.saveas(str(local_dxf))
+
+    dxf_key = f"{output_prefix}{dxf_filename}"
+    s3.upload_file(str(local_dxf), bucket, dxf_key)
+    logger.info("DXF uploaded to s3://%s/%s", bucket, dxf_key)
+
+    # Clean up local file
+    local_dxf.unlink(missing_ok=True)
+
+    return dxf_key
+
+
+# ---------------------------------------------------------------------------
 # Write a status.json so the desktop client can poll for completion
 # ---------------------------------------------------------------------------
 def write_status(prefix, status, message="", output_prefix="", first_link=""):
@@ -326,6 +482,9 @@ def lambda_handler(event, context):
                 s3.put_object(Bucket=bucket, Key=csv_key, Body=csv_content.encode("utf-8"), ContentType="text/csv")
                 if not first_link:
                     first_link = link
+
+            # Generate DXF (if geo layer is available)
+            export_dxf(bucket, pano_meta, photo_meta, client_name, project_name, file_dt, output_prefix)
 
             # Send email
             send_email(project_name, client_name, file_dt, employee_name, first_link, output_prefix)

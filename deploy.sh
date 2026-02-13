@@ -4,17 +4,20 @@
 #
 # Deploys the full stack:
 #   1. SAM build + deploy (Lambda functions + API Gateway + S3 bucket)
-#   2. Upload HTML templates to S3 (templates/ prefix)
+#   2. Upload HTML templates, master.dxf, and shapefile to S3 (templates/ prefix)
 #   3. Upload frontend static files to S3 (frontend/ prefix)
 #
 # Prerequisites:
 #   - AWS CLI configured with appropriate credentials
 #   - AWS SAM CLI installed (pip install aws-sam-cli)
 #   - S3 bucket name set in template.yaml or passed as parameter
+#   - (Optional) Geo Lambda Layer built and published for DXF export
+#     see: layers/geo/build_layer.sh --publish
 #
 # Usage:
 #   ./deploy.sh                              # Deploy with defaults
 #   ./deploy.sh --bucket my-bucket-name      # Deploy with custom bucket
+#   ./deploy.sh --geo-layer-arn arn:aws:...   # Deploy with DXF export enabled
 # ──────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -22,21 +25,24 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 STACK_NAME="sunrise-image-manager"
 S3_BUCKET="sunrise-image-manager"
 REGION="${AWS_DEFAULT_REGION:-us-east-1}"
+GEO_LAYER_ARN=""
 
 # Parse args
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --bucket) S3_BUCKET="$2"; shift 2 ;;
-        --stack)  STACK_NAME="$2"; shift 2 ;;
-        --region) REGION="$2"; shift 2 ;;
+        --bucket)        S3_BUCKET="$2"; shift 2 ;;
+        --stack)         STACK_NAME="$2"; shift 2 ;;
+        --region)        REGION="$2"; shift 2 ;;
+        --geo-layer-arn) GEO_LAYER_ARN="$2"; shift 2 ;;
         *) echo "Unknown arg: $1"; exit 1 ;;
     esac
 done
 
 echo "=== Sunrise Image Manager Deployment ==="
-echo "Stack:  $STACK_NAME"
-echo "Bucket: $S3_BUCKET"
-echo "Region: $REGION"
+echo "Stack:     $STACK_NAME"
+echo "Bucket:    $S3_BUCKET"
+echo "Region:    $REGION"
+echo "Geo Layer: ${GEO_LAYER_ARN:-<none — DXF export disabled>}"
 echo ""
 
 # Step 1: SAM build
@@ -46,12 +52,17 @@ sam build --template template.yaml
 
 # Step 2: SAM deploy
 echo ">> Deploying CloudFormation stack..."
+PARAM_OVERRIDES="S3BucketName=$S3_BUCKET"
+if [ -n "$GEO_LAYER_ARN" ]; then
+    PARAM_OVERRIDES="$PARAM_OVERRIDES GeoLayerArn=$GEO_LAYER_ARN"
+fi
+
 sam deploy \
     --stack-name "$STACK_NAME" \
     --region "$REGION" \
     --resolve-s3 \
     --capabilities CAPABILITY_IAM \
-    --parameter-overrides "S3BucketName=$S3_BUCKET" \
+    --parameter-overrides $PARAM_OVERRIDES \
     --no-confirm-changeset
 
 # Get outputs
@@ -78,6 +89,15 @@ cd "$SCRIPT_DIR"
 aws s3 cp Pano-Template.htm "s3://$S3_BUCKET/templates/Pano-Template.htm" --content-type "text/html"
 aws s3 cp img-Template.htm "s3://$S3_BUCKET/templates/img-Template.htm" --content-type "text/html"
 aws s3 cp Email-Report-Template.htm "s3://$S3_BUCKET/templates/Email-Report-Template.htm" --content-type "text/html"
+
+# Step 3b: Upload DXF block file and shapefile for geo/DXF export
+echo ">> Uploading master.dxf and shapefile to S3..."
+aws s3 cp master.dxf "s3://$S3_BUCKET/templates/master.dxf"
+for ext in shp shx dbf prj cpg; do
+    if [ -f "NAD83SPCEPSG.$ext" ]; then
+        aws s3 cp "NAD83SPCEPSG.$ext" "s3://$S3_BUCKET/templates/NAD83SPCEPSG.$ext"
+    fi
+done
 
 # Step 4: Upload frontend with API URL injected
 echo ""
