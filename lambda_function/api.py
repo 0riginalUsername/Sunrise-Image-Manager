@@ -92,6 +92,7 @@ def handle_create_job(event):
 
     Expects JSON body with pre-classified lists:
     {
+        "office_name": "...",
         "client_name": "...",
         "project_name": "...",
         "employee_name": "...",
@@ -101,6 +102,7 @@ def handle_create_job(event):
 
     Or a flat list (the processing Lambda will auto-classify by aspect ratio):
     {
+        "office_name": "...",
         "client_name": "...",
         "project_name": "...",
         "employee_name": "...",
@@ -114,6 +116,7 @@ def handle_create_job(event):
     except (json.JSONDecodeError, TypeError):
         return cors_response(400, {"error": "Invalid JSON body"})
 
+    office_name = body.get("office_name", "").strip().replace(" ", "_")
     client_name = body.get("client_name", "").strip().replace(" ", "_")
     project_name = body.get("project_name", "").strip().replace(" ", "_")
     employee_name = body.get("employee_name", "").strip()
@@ -121,14 +124,14 @@ def handle_create_job(event):
     photo_files = body.get("photo_files", [])
     image_files = body.get("image_files", [])
 
-    if not client_name or not project_name or not employee_name:
-        return cors_response(400, {"error": "client_name, project_name, and employee_name are required"})
+    if not office_name or not client_name or not project_name or not employee_name:
+        return cors_response(400, {"error": "office_name, client_name, project_name, and employee_name are required"})
 
     if not pano_files and not photo_files and not image_files:
         return cors_response(400, {"error": "At least one image file is required"})
 
     file_dt = datetime.utcnow().strftime("%d%b%y_%I-%M%p")
-    job_prefix = f"uploads/{client_name}/{project_name}/{file_dt}/"
+    job_prefix = f"uploads/{office_name}/{client_name}/{project_name}/{file_dt}/"
 
     def make_uploads(filenames, subdir):
         uploads = []
@@ -153,6 +156,7 @@ def handle_create_job(event):
     return cors_response(200, {
         "job_prefix": job_prefix,
         "file_dt": file_dt,
+        "office_name": office_name,
         "client_name": client_name,
         "project_name": project_name,
         "employee_name": employee_name,
@@ -169,7 +173,8 @@ def handle_submit_job(event):
 
     Expects JSON body:
     {
-        "job_prefix": "uploads/Client/Project/01Jan25_12-00PM/",
+        "job_prefix": "uploads/Office/Client/Project/01Jan25_12-00PM/",
+        "office_name": "...",
         "client_name": "...",
         "project_name": "...",
         "employee_name": "...",
@@ -191,19 +196,21 @@ def handle_submit_job(event):
     # Store project password if provided (hash it, don't put plaintext in manifest)
     project_password = body.get("project_password", "").strip()
     if project_password:
+        office_name_safe = body.get("office_name", "").strip().replace(" ", "_")
         client_name_safe = body.get("client_name", "").strip().replace(" ", "_")
         project_name_safe = body.get("project_name", "").strip().replace(" ", "_")
         pw_hash, pw_salt = hash_password(project_password)
-        auth_key = f"state/project-auth/{client_name_safe}/{project_name_safe}.json"
+        auth_key = f"state/project-auth/{office_name_safe}/{client_name_safe}/{project_name_safe}.json"
         s3.put_object(
             Bucket=BUCKET,
             Key=auth_key,
             Body=json.dumps({"hash": pw_hash, "salt": pw_salt}).encode("utf-8"),
             ContentType="application/json",
         )
-        logger.info("Stored project password for %s/%s", client_name_safe, project_name_safe)
+        logger.info("Stored project password for %s/%s/%s", office_name_safe, client_name_safe, project_name_safe)
 
     manifest = {
+        "office_name": body.get("office_name", ""),
         "client_name": body.get("client_name", ""),
         "project_name": body.get("project_name", ""),
         "employee_name": body.get("employee_name", ""),
@@ -214,6 +221,7 @@ def handle_submit_job(event):
         "keep_filenames": body.get("keep_filenames", False),
         "jpeg_quality": body.get("jpeg_quality"),
         "position_csv": body.get("position_csv", ""),
+        "submitter_email": body.get("submitter_email", ""),
         "submitted_at": datetime.utcnow().isoformat() + "Z",
     }
 
@@ -258,13 +266,16 @@ def handle_job_status(event):
 
 def handle_get_clients(event):
     """
-    Return the client/project registry.
+    Return the office/client/project registry.
 
     Response:
     {
         "clients": {
-            "Ogden_City": ["Main_St_Survey", "Water_Line"],
-            "UDOT": ["I15_Bridge"]
+            "Salt_Lake": {
+                "Ogden_City": ["Main_St_Survey", "Water_Line"],
+                "UDOT": ["I15_Bridge"]
+            },
+            "St_George": { ... }
         }
     }
     """
@@ -285,6 +296,7 @@ def handle_manage_project_password(event):
 
     Expects JSON body:
     {
+        "office": "OfficeName",
         "client": "ClientName",
         "project": "ProjectName",
         "password": "new-password"     // set/update
@@ -301,21 +313,22 @@ def handle_manage_project_password(event):
     except (json.JSONDecodeError, TypeError):
         return cors_response(400, {"error": "Invalid JSON body"})
 
+    office = body.get("office", "").strip().replace(" ", "_")
     client = body.get("client", "").strip().replace(" ", "_")
     project = body.get("project", "").strip().replace(" ", "_")
     action = body.get("action", "")
     password = body.get("password", "")
 
-    if not client or not project:
-        return cors_response(400, {"error": "client and project are required"})
+    if not office or not client or not project:
+        return cors_response(400, {"error": "office, client, and project are required"})
 
-    auth_key = f"state/project-auth/{client}/{project}.json"
+    auth_key = f"state/project-auth/{office}/{client}/{project}.json"
 
     # Remove password
     if action == "remove" or (not password and action != "check"):
         try:
             s3.delete_object(Bucket=BUCKET, Key=auth_key)
-            logger.info("Removed project password for %s/%s", client, project)
+            logger.info("Removed project password for %s/%s/%s", office, client, project)
             return cors_response(200, {"message": "Password removed", "protected": False})
         except Exception as e:
             logger.error("Error removing project password: %s", e)
@@ -338,7 +351,7 @@ def handle_manage_project_password(event):
             Body=json.dumps({"hash": pw_hash, "salt": pw_salt}).encode("utf-8"),
             ContentType="application/json",
         )
-        logger.info("Set project password for %s/%s", client, project)
+        logger.info("Set project password for %s/%s/%s", office, client, project)
         return cors_response(200, {"message": "Password set", "protected": True})
     except Exception as e:
         logger.error("Error setting project password: %s", e)
@@ -349,16 +362,17 @@ def handle_project_auth_check(event):
     """
     Check if a project is password-protected.
 
-    Query parameters: ?client=ClientName&project=ProjectName
+    Query parameters: ?office=OfficeName&client=ClientName&project=ProjectName
     Response: { "protected": true/false }
     """
     params = event.get("queryStringParameters") or {}
+    office = params.get("office", "").strip().replace(" ", "_")
     client = params.get("client", "").strip().replace(" ", "_")
     project = params.get("project", "").strip().replace(" ", "_")
-    if not client or not project:
-        return cors_response(400, {"error": "client and project query parameters are required"})
+    if not office or not client or not project:
+        return cors_response(400, {"error": "office, client, and project query parameters are required"})
 
-    auth_key = f"state/project-auth/{client}/{project}.json"
+    auth_key = f"state/project-auth/{office}/{client}/{project}.json"
     try:
         s3.get_object(Bucket=BUCKET, Key=auth_key)
         return cors_response(200, {"protected": True})
@@ -373,7 +387,7 @@ def handle_project_auth_verify(event):
     """
     Verify a project password.
 
-    Expects JSON body: { "client": "...", "project": "...", "password": "..." }
+    Expects JSON body: { "office": "...", "client": "...", "project": "...", "password": "..." }
     Response: { "authorized": true/false }
     """
     try:
@@ -381,14 +395,15 @@ def handle_project_auth_verify(event):
     except (json.JSONDecodeError, TypeError):
         return cors_response(400, {"error": "Invalid JSON body"})
 
+    office = body.get("office", "").strip().replace(" ", "_")
     client = body.get("client", "").strip().replace(" ", "_")
     project = body.get("project", "").strip().replace(" ", "_")
     password = body.get("password", "")
 
-    if not client or not project or not password:
-        return cors_response(400, {"error": "client, project, and password are required"})
+    if not office or not client or not project or not password:
+        return cors_response(400, {"error": "office, client, project, and password are required"})
 
-    auth_key = f"state/project-auth/{client}/{project}.json"
+    auth_key = f"state/project-auth/{office}/{client}/{project}.json"
     try:
         obj = s3.get_object(Bucket=BUCKET, Key=auth_key)
         auth_data = json.loads(obj["Body"].read().decode("utf-8"))

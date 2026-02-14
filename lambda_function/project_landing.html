@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Project | Sunrise Engineering</title>
-    <link rel="icon" type="image/x-icon" href="../../frontend/favicon.ico">
+    <link rel="icon" type="image/x-icon" href="../../../frontend/favicon.ico">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
     <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
@@ -333,7 +333,10 @@
         <img alt="Sunrise Engineering" src="https://sunrise-eng.com/wp-content/themes/sunrise-eng-2018/assets/img/logo-sunrise-white.svg" />
         <h1 id="projectTitle">Loading...</h1>
     </div>
-    <span class="client-badge" id="clientBadge"></span>
+    <div style="display:flex;align-items:center;gap:12px;">
+        <span class="client-badge" id="officeBadge" style="background:rgba(255,255,255,0.15);color:var(--white);"></span>
+        <span class="client-badge" id="clientBadge"></span>
+    </div>
 </div>
 
 <!-- Stats -->
@@ -434,7 +437,7 @@ async function init() {
 
         // Check if project is password-protected
         if (projectData.protected) {
-            var storageKey = 'pw_' + projectData.client_name + '_' + projectData.project_name;
+            var storageKey = 'pw_' + (projectData.office_name || '') + '_' + projectData.client_name + '_' + projectData.project_name;
             if (sessionStorage.getItem(storageKey) === 'verified') {
                 loadContent();
             } else {
@@ -475,6 +478,7 @@ async function verifyProjectPassword() {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
+                office: projectData.office_name || '',
                 client: projectData.client_name,
                 project: projectData.project_name,
                 password: password
@@ -485,7 +489,7 @@ async function verifyProjectPassword() {
 
         var data = await resp.json();
         if (data.authorized) {
-            var storageKey = 'pw_' + projectData.client_name + '_' + projectData.project_name;
+            var storageKey = 'pw_' + (projectData.office_name || '') + '_' + projectData.client_name + '_' + projectData.project_name;
             sessionStorage.setItem(storageKey, 'verified');
             document.getElementById('passwordGate').classList.remove('visible');
             document.getElementById('mapSection').style.display = '';
@@ -521,9 +525,15 @@ function loadContent() {
 function renderHeader() {
     var name = projectData.project_name.replace(/_/g, ' ');
     var client = projectData.client_name.replace(/_/g, ' ');
-    document.title = name + ' | ' + client + ' | Sunrise Engineering';
+    var office = (projectData.office_name || '').replace(/_/g, ' ');
+    document.title = name + ' | ' + client + ' | ' + office + ' | Sunrise Engineering';
     document.getElementById('projectTitle').textContent = name;
     document.getElementById('clientBadge').textContent = client;
+    if (office) {
+        document.getElementById('officeBadge').textContent = office;
+    } else {
+        document.getElementById('officeBadge').style.display = 'none';
+    }
 }
 
 /* ── Stats ── */

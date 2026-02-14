@@ -8,9 +8,9 @@ Processes all images in the job: extracts EXIF metadata, compresses, renames wit
 rolling counter, generates HTML viewer pages, exports CSV, and sends email notification.
 
 Architecture:
-  uploads/{client}/{project}/{datetime}/manifest.json   <-- trigger
-  uploads/{client}/{project}/{datetime}/raw/             <-- raw JPGs
-  processed/{client}/{project}/{datetime}/               <-- compressed images + HTML + CSV
+  uploads/{office}/{client}/{project}/{datetime}/manifest.json   <-- trigger
+  uploads/{office}/{client}/{project}/{datetime}/raw/             <-- raw JPGs
+  processed/{office}/{client}/{project}/{datetime}/               <-- compressed images + HTML + CSV
 """
 
 import os
@@ -238,13 +238,13 @@ def render_template_string(template_str, context):
 # ---------------------------------------------------------------------------
 # CSV export
 # ---------------------------------------------------------------------------
-def generate_csv(images_meta, client_name, project_name, file_dt, type_str):
+def generate_csv(images_meta, office_name, client_name, project_name, file_dt, type_str):
     """Generate CSV content as string with GPS and survey coordinate columns."""
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(["Filename", "Date Taken", "GPSLatitude", "GPSLongitude", "GPSAltitude",
                       "Northing", "Easting", "Elevation", "Hyperlink"])
-    domain_path = f"{DOMAIN_PREFIX}/{client_name}/{project_name}/{file_dt}"
+    domain_path = f"{DOMAIN_PREFIX}/{office_name}/{client_name}/{project_name}/{file_dt}"
     first_link = None
     for info in images_meta:
         base = info["base_name"].rsplit(".", 1)[0]
@@ -285,14 +285,21 @@ def parse_position_csv(csv_text):
 # ---------------------------------------------------------------------------
 # Email notification
 # ---------------------------------------------------------------------------
-def send_email(project_name, client_name, dt_str, employee, first_link, s3_output_prefix):
+def send_email(project_name, client_name, office_name, dt_str, employee, first_link,
+               s3_output_prefix, submitter_email=""):
     """Send HTML email notification via SMTP."""
-    if not EMAIL_HOST or not RECIPIENTS:
-        logger.info("Email not configured; skipping notification.")
+    # Build recipient list: configured recipients + the submitter
+    all_recipients = list(RECIPIENTS)
+    if submitter_email and submitter_email not in all_recipients:
+        all_recipients.append(submitter_email)
+
+    if not EMAIL_HOST or not all_recipients:
+        logger.info("Email not configured or no recipients; skipping notification.")
         return
     try:
         template_str = load_template_from_s3(EMAIL_TEMPLATE_KEY)
         html_content = render_template_string(template_str, {
+            "OFFICE_NAME": office_name,
             "PROJECT_NAME": project_name,
             "CLIENT_NAME": client_name,
             "UPLOAD_TIME": dt_str,
@@ -303,14 +310,14 @@ def send_email(project_name, client_name, dt_str, employee, first_link, s3_outpu
         msg = EmailMessage()
         msg["Subject"] = f"Sunrise Engineering - Project Update: {project_name}"
         msg["From"] = EMAIL_SENDER
-        msg["To"] = ",".join(RECIPIENTS)
+        msg["To"] = ",".join(all_recipients)
         msg.set_content("Project update attached.")
         msg.add_alternative(html_content, subtype="html")
         with smtplib.SMTP(EMAIL_HOST, EMAIL_PORT) as smtp:
             smtp.starttls()
             smtp.login(EMAIL_USER, EMAIL_PASS)
             smtp.send_message(msg)
-        logger.info("Status email sent.")
+        logger.info("Status email sent to %s.", ", ".join(all_recipients))
     except Exception as e:
         logger.error("Failed to send email: %s", e)
 
@@ -360,7 +367,7 @@ def latlon_to_state_plane(lat, lon, alt=None):
 # ---------------------------------------------------------------------------
 # DXF export  (requires geo Lambda Layer)
 # ---------------------------------------------------------------------------
-def export_dxf(bucket, pano_meta, photo_meta, client_name, project_name, file_dt, output_prefix):
+def export_dxf(bucket, pano_meta, photo_meta, office_name, client_name, project_name, file_dt, output_prefix):
     """
     Export pano and photo locations to a DXF file using block definitions from
     master.dxf.  The output is uploaded to S3 under the processed/ prefix.
@@ -414,7 +421,7 @@ def export_dxf(bucket, pano_meta, photo_meta, client_name, project_name, file_dt
         if proj_slug != "NoGPS":
             break
 
-    domain_path = f"{DOMAIN_PREFIX}/{client_name}/{project_name}/{file_dt}"
+    domain_path = f"{DOMAIN_PREFIX}/{office_name}/{client_name}/{project_name}/{file_dt}"
 
     def insert_blocks(meta_list, block_name, layer_name):
         for info in meta_list:
@@ -469,26 +476,28 @@ def export_dxf(bucket, pano_meta, photo_meta, client_name, project_name, file_dt
 # ---------------------------------------------------------------------------
 # Client/project registry  (state/clients.json in S3)
 # ---------------------------------------------------------------------------
-def register_client_project(client_name, project_name):
-    """Add client/project to the registry if not already present."""
+def register_client_project(office_name, client_name, project_name):
+    """Add office/client/project to the registry if not already present."""
     try:
         try:
             obj = s3.get_object(Bucket=BUCKET, Key=CLIENTS_KEY)
-            clients = json.loads(obj["Body"].read().decode("utf-8"))
+            registry = json.loads(obj["Body"].read().decode("utf-8"))
         except Exception:
-            clients = {}
+            registry = {}
 
-        projects = clients.get(client_name, [])
+        office_clients = registry.get(office_name, {})
+        projects = office_clients.get(client_name, [])
         if project_name not in projects:
             projects.append(project_name)
-            clients[client_name] = sorted(projects)
+            office_clients[client_name] = sorted(projects)
+            registry[office_name] = office_clients
             s3.put_object(
                 Bucket=BUCKET,
                 Key=CLIENTS_KEY,
-                Body=json.dumps(clients, indent=2).encode("utf-8"),
+                Body=json.dumps(registry, indent=2).encode("utf-8"),
                 ContentType="application/json",
             )
-            logger.info("Registered client/project: %s / %s", client_name, project_name)
+            logger.info("Registered office/client/project: %s / %s / %s", office_name, client_name, project_name)
     except Exception as e:
         logger.warning("Failed to update client registry: %s", e)
 
@@ -496,10 +505,10 @@ def register_client_project(client_name, project_name):
 # ---------------------------------------------------------------------------
 # Project landing page  (index.html + index.json per project)
 # ---------------------------------------------------------------------------
-def update_project_index(bucket, client_name, project_name, file_dt, employee_name,
+def update_project_index(bucket, office_name, client_name, project_name, file_dt, employee_name,
                          pano_meta, photo_meta, output_prefix, csv_files=None, dxf_file=None):
     """Append the current batch to the project index and deploy the landing page."""
-    project_prefix = f"processed/{client_name}/{project_name}/"
+    project_prefix = f"processed/{office_name}/{client_name}/{project_name}/"
     index_key = f"{project_prefix}index.json"
 
     # Read existing index or start fresh
@@ -507,10 +516,10 @@ def update_project_index(bucket, client_name, project_name, file_dt, employee_na
         obj = s3.get_object(Bucket=bucket, Key=index_key)
         index_data = json.loads(obj["Body"].read().decode("utf-8"))
     except Exception:
-        index_data = {"client_name": client_name, "project_name": project_name, "batches": []}
+        index_data = {"office_name": office_name, "client_name": client_name, "project_name": project_name, "batches": []}
 
     # Check if this project is password-protected
-    auth_key = f"state/project-auth/{client_name}/{project_name}.json"
+    auth_key = f"state/project-auth/{office_name}/{client_name}/{project_name}.json"
     try:
         s3.head_object(Bucket=bucket, Key=auth_key)
         index_data["protected"] = True
@@ -620,6 +629,7 @@ def lambda_handler(event, context):
         obj = s3.get_object(Bucket=bucket, Key=manifest_key)
         manifest = json.loads(obj["Body"].read().decode("utf-8"))
 
+        office_name = manifest["office_name"]
         client_name = manifest["client_name"]
         project_name = manifest["project_name"]
         employee_name = manifest["employee_name"]
@@ -630,6 +640,7 @@ def lambda_handler(event, context):
         keep_filenames = manifest.get("keep_filenames", False)
         jpeg_quality = manifest.get("jpeg_quality")
         position_csv = manifest.get("position_csv", "")
+        submitter_email = manifest.get("submitter_email", "")
 
         # Parse position CSV into lookup dict
         csv_positions = parse_position_csv(position_csv)
@@ -651,8 +662,8 @@ def lambda_handler(event, context):
                     logger.warning("Failed to classify %s, defaulting to photo: %s", key, e)
                     photo_keys.append(key)
 
-        job_prefix = f"uploads/{client_name}/{project_name}/{file_dt}/"
-        output_prefix = f"processed/{client_name}/{project_name}/{file_dt}/"
+        job_prefix = f"uploads/{office_name}/{client_name}/{project_name}/{file_dt}/"
+        output_prefix = f"processed/{office_name}/{client_name}/{project_name}/{file_dt}/"
 
         write_status(job_prefix, "processing", "Image processing started")
 
@@ -671,12 +682,12 @@ def lambda_handler(event, context):
             first_link = None
             csv_keys = []
             if pano_meta:
-                csv_content, first_link = generate_csv(pano_meta, client_name, project_name, file_dt, "pano")
+                csv_content, first_link = generate_csv(pano_meta, office_name, client_name, project_name, file_dt, "pano")
                 csv_key = f"{output_prefix}{file_dt}_{client_name}_{project_name}_pano_WGS84.csv"
                 s3.put_object(Bucket=bucket, Key=csv_key, Body=csv_content.encode("utf-8"), ContentType="text/csv")
                 csv_keys.append(csv_key)
             if photo_meta:
-                csv_content, link = generate_csv(photo_meta, client_name, project_name, file_dt, "photo")
+                csv_content, link = generate_csv(photo_meta, office_name, client_name, project_name, file_dt, "photo")
                 csv_key = f"{output_prefix}{file_dt}_{client_name}_{project_name}_photo_WGS84.csv"
                 s3.put_object(Bucket=bucket, Key=csv_key, Body=csv_content.encode("utf-8"), ContentType="text/csv")
                 csv_keys.append(csv_key)
@@ -684,19 +695,20 @@ def lambda_handler(event, context):
                     first_link = link
 
             # Generate DXF (if geo layer is available)
-            dxf_key = export_dxf(bucket, pano_meta, photo_meta, client_name, project_name, file_dt, output_prefix)
+            dxf_key = export_dxf(bucket, pano_meta, photo_meta, office_name, client_name, project_name, file_dt, output_prefix)
 
             # Update project landing page (appendable across batches)
-            update_project_index(bucket, client_name, project_name, file_dt, employee_name,
+            update_project_index(bucket, office_name, client_name, project_name, file_dt, employee_name,
                                  pano_meta, photo_meta, output_prefix, csv_files=csv_keys, dxf_file=dxf_key)
 
-            # Send email
-            send_email(project_name, client_name, file_dt, employee_name, first_link, output_prefix)
+            # Send email (include submitter)
+            send_email(project_name, client_name, office_name, file_dt, employee_name,
+                       first_link, output_prefix, submitter_email=submitter_email)
 
-            # Register client/project in the registry
-            register_client_project(client_name, project_name)
+            # Register office/client/project in the registry
+            register_client_project(office_name, client_name, project_name)
 
-            landing_url = f"{DOMAIN_BASE}{DOMAIN_PREFIX}/{client_name}/{project_name}/index.html"
+            landing_url = f"{DOMAIN_BASE}{DOMAIN_PREFIX}/{office_name}/{client_name}/{project_name}/index.html"
             write_status(job_prefix, "complete", "Processing finished", output_prefix, first_link or "", landing_url)
             logger.info("Job complete: %s", output_prefix)
 

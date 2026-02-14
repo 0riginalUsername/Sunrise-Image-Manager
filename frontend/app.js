@@ -208,7 +208,7 @@ checkAuth();
 // ── State ──────────────────────────────────────────────────────────────────
 // Each entry: { file: File, type: 'pano'|'photo'|'classifying' }
 let imageFiles = [];
-// Client/project registry: { "ClientName": ["Project1", "Project2"], ... }
+// Client/project registry: { "OfficeName": { "ClientName": ["Project1", "Project2"] }, ... }
 let clientRegistry = {};
 
 // ── DOM refs ───────────────────────────────────────────────────────────────
@@ -223,8 +223,10 @@ const statusText         = document.getElementById('statusText');
 const resultSection      = document.getElementById('resultSection');
 const resultMessage      = document.getElementById('resultMessage');
 const resultLink         = document.getElementById('resultLink');
+const officeInput        = document.getElementById('officeName');
 const clientInput        = document.getElementById('clientName');
 const projectInput       = document.getElementById('projectName');
+const officeDatalist     = document.getElementById('officeList');
 const clientDatalist     = document.getElementById('clientList');
 const projectDatalist    = document.getElementById('projectList');
 
@@ -235,25 +237,36 @@ async function loadClientRegistry() {
         if (resp.ok) {
             const data = await resp.json();
             clientRegistry = data.clients || {};
-            populateClientList();
+            populateOfficeList();
         }
     } catch (err) {
         console.warn('Could not load client registry:', err);
     }
 }
 
-function populateClientList() {
+function populateOfficeList() {
+    officeDatalist.innerHTML = '';
+    for (const office of Object.keys(clientRegistry).sort()) {
+        const opt = document.createElement('option');
+        opt.value = office;
+        officeDatalist.appendChild(opt);
+    }
+}
+
+function populateClientList(officeName) {
     clientDatalist.innerHTML = '';
-    for (const client of Object.keys(clientRegistry).sort()) {
+    const clients = clientRegistry[officeName] || {};
+    for (const client of Object.keys(clients).sort()) {
         const opt = document.createElement('option');
         opt.value = client;
         clientDatalist.appendChild(opt);
     }
 }
 
-function populateProjectList(clientName) {
+function populateProjectList(officeName, clientName) {
     projectDatalist.innerHTML = '';
-    const projects = clientRegistry[clientName] || [];
+    const clients = clientRegistry[officeName] || {};
+    const projects = clients[clientName] || [];
     for (const proj of projects) {
         const opt = document.createElement('option');
         opt.value = proj;
@@ -261,9 +274,16 @@ function populateProjectList(clientName) {
     }
 }
 
+// When the office input changes, update client suggestions
+officeInput.addEventListener('input', () => {
+    populateClientList(officeInput.value.trim());
+    projectDatalist.innerHTML = '';
+    checkProjectPasswordStatus();
+});
+
 // When the client input changes, update the project suggestions and check password
 clientInput.addEventListener('input', () => {
-    populateProjectList(clientInput.value.trim());
+    populateProjectList(officeInput.value.trim(), clientInput.value.trim());
     checkProjectPasswordStatus();
 });
 
@@ -276,12 +296,14 @@ projectInput.addEventListener('input', () => {
 let pwCheckTimeout = null;
 
 function checkProjectPasswordStatus() {
+    const office = officeInput.value.trim();
     const client = clientInput.value.trim();
     const project = projectInput.value.trim();
     const panel = document.getElementById('pwManagePanel');
 
-    // Only show for existing client+project combos
-    if (!client || !project || !clientRegistry[client] || !clientRegistry[client].includes(project)) {
+    // Only show for existing office+client+project combos
+    const officeClients = clientRegistry[office] || {};
+    if (!office || !client || !project || !officeClients[client] || !officeClients[client].includes(project)) {
         panel.classList.remove('visible');
         return;
     }
@@ -298,7 +320,7 @@ function checkProjectPasswordStatus() {
             const resp = await fetch(`${API_BASE}/project-password`, {
                 method: 'POST',
                 headers: authHeaders(),
-                body: JSON.stringify({ client, project, action: 'check' }),
+                body: JSON.stringify({ office, client, project, action: 'check' }),
             });
             if (!resp.ok) return;
             const data = await resp.json();
@@ -327,6 +349,7 @@ function updatePwBadge(isProtected) {
 }
 
 async function setProjectPassword() {
+    const office = officeInput.value.trim();
     const client = clientInput.value.trim();
     const project = projectInput.value.trim();
     const password = document.getElementById('pwManageInput').value;
@@ -344,7 +367,7 @@ async function setProjectPassword() {
         const resp = await fetch(`${API_BASE}/project-password`, {
             method: 'POST',
             headers: authHeaders(),
-            body: JSON.stringify({ client, project, password }),
+            body: JSON.stringify({ office, client, project, password }),
         });
         const data = await resp.json();
         if (resp.ok) {
@@ -365,6 +388,7 @@ async function setProjectPassword() {
 }
 
 async function removeProjectPassword() {
+    const office = officeInput.value.trim();
     const client = clientInput.value.trim();
     const project = projectInput.value.trim();
     const msgEl = document.getElementById('pwMsg');
@@ -377,7 +401,7 @@ async function removeProjectPassword() {
         const resp = await fetch(`${API_BASE}/project-password`, {
             method: 'POST',
             headers: authHeaders(),
-            body: JSON.stringify({ client, project, action: 'remove' }),
+            body: JSON.stringify({ office, client, project, action: 'remove' }),
         });
         const data = await resp.json();
         if (resp.ok) {
@@ -535,11 +559,13 @@ function showResult(message, link, landingPage) {
 
 // ── Main processing flow ────────────────────────────────────────────────
 async function startProcessing() {
+    const officeName   = document.getElementById('officeName').value.trim();
     const clientName   = document.getElementById('clientName').value.trim();
     const projectName  = document.getElementById('projectName').value.trim();
     const employeeName = document.getElementById('employeeName').value;
 
     // Validate
+    if (!officeName) { alert('Please enter an office name.'); return; }
     if (!clientName) { alert('Please enter a client name.'); return; }
     if (!projectName) { alert('Please enter a project name.'); return; }
     if (!employeeName) { alert('Please select an employee.'); return; }
@@ -571,6 +597,7 @@ async function startProcessing() {
             method: 'POST',
             headers: authHeaders(),
             body: JSON.stringify({
+                office_name: officeName,
                 client_name: clientName,
                 project_name: projectName,
                 employee_name: employeeName,
@@ -620,8 +647,17 @@ async function startProcessing() {
         setProgress(78, 'Submitting job for processing...', false);
 
         // Step 3: Submit job manifest (include project password if set)
+        // Get submitter email from Cognito session
+        let submitterEmail = '';
+        try {
+            if (currentSession) {
+                submitterEmail = currentSession.getIdToken().payload.email || '';
+            }
+        } catch (e) { /* ignore */ }
+
         const submitBody = {
             job_prefix: jobData.job_prefix,
+            office_name: jobData.office_name,
             client_name: jobData.client_name,
             project_name: jobData.project_name,
             employee_name: jobData.employee_name,
@@ -631,6 +667,7 @@ async function startProcessing() {
             keep_filenames: keepFilenames,
             jpeg_quality: jpegQuality,
             position_csv: positionCsv,
+            submitter_email: submitterEmail,
         };
         if (projectPassword) {
             submitBody.project_password = projectPassword;
