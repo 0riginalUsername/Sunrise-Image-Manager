@@ -238,10 +238,11 @@ def render_template_string(template_str, context):
 # CSV export
 # ---------------------------------------------------------------------------
 def generate_csv(images_meta, client_name, project_name, file_dt, type_str):
-    """Generate WGS84 CSV content as string."""
+    """Generate CSV content as string with GPS and survey coordinate columns."""
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["Filename", "Date Taken", "GPSLatitude", "GPSLongitude", "GPSAltitude", "Hyperlink"])
+    writer.writerow(["Filename", "Date Taken", "GPSLatitude", "GPSLongitude", "GPSAltitude",
+                      "Northing", "Easting", "Elevation", "Hyperlink"])
     domain_path = f"{DOMAIN_PREFIX}/{client_name}/{project_name}/{file_dt}"
     first_link = None
     for info in images_meta:
@@ -249,8 +250,35 @@ def generate_csv(images_meta, client_name, project_name, file_dt, type_str):
         hyperlink = f"{DOMAIN_BASE}{domain_path}/{base}.htm"
         if first_link is None:
             first_link = hyperlink
-        writer.writerow([base, info.get("date_time"), info.get("lat"), info.get("lon"), info.get("alt"), hyperlink])
+        writer.writerow([base, info.get("date_time"), info.get("lat"), info.get("lon"), info.get("alt"),
+                          info.get("northing", ""), info.get("easting", ""), info.get("csv_elevation", ""),
+                          hyperlink])
     return buf.getvalue(), first_link
+
+
+# ---------------------------------------------------------------------------
+# Position CSV parsing  (name, northing, easting, elevation)
+# ---------------------------------------------------------------------------
+def parse_position_csv(csv_text):
+    """Parse a position CSV into a dict keyed by lowercase name (no extension)."""
+    positions = {}
+    if not csv_text:
+        return positions
+    reader = csv.DictReader(io.StringIO(csv_text))
+    for row in reader:
+        name = row.get("name", "").strip()
+        if not name:
+            continue
+        name_key = name.rsplit(".", 1)[0].replace(" ", "_").lower()
+        try:
+            positions[name_key] = {
+                "northing": float(row.get("northing", 0)),
+                "easting": float(row.get("easting", 0)),
+                "elevation": float(row.get("elevation", 0)),
+            }
+        except (ValueError, TypeError):
+            continue
+    return positions
 
 
 # ---------------------------------------------------------------------------
@@ -389,14 +417,23 @@ def export_dxf(bucket, pano_meta, photo_meta, client_name, project_name, file_dt
 
     def insert_blocks(meta_list, block_name, layer_name):
         for info in meta_list:
-            lat, lon, alt = info.get("lat"), info.get("lon"), info.get("alt")
-            if lat is None or lon is None:
-                continue
-            try:
-                _, epsg, x, y, z = latlon_to_state_plane(lat, lon, alt)
-            except Exception as e:
-                logger.warning("Projection fail for %s: %s", info.get("base_name"), e)
-                continue
+            northing = info.get("northing")
+            easting = info.get("easting")
+            csv_elev = info.get("csv_elevation")
+
+            if northing is not None and easting is not None:
+                # CSV survey coordinates — use directly (easting=X, northing=Y)
+                x, y, z = easting, northing, csv_elev or 0
+            else:
+                lat, lon, alt = info.get("lat"), info.get("lon"), info.get("alt")
+                if lat is None or lon is None:
+                    continue
+                try:
+                    _, epsg, x, y, z = latlon_to_state_plane(lat, lon, alt)
+                except Exception as e:
+                    logger.warning("Projection fail for %s: %s", info.get("base_name"), e)
+                    continue
+
             base = info["base_name"].rsplit(".", 1)[0]
             hyperlink = f"{DOMAIN_BASE}{domain_path}/{base}.htm"
             block_ref = msp.add_blockref(block_name, (x, y, z), dxfattribs={
@@ -500,6 +537,12 @@ def lambda_handler(event, context):
         pano_keys = list(manifest.get("pano_keys", []))
         photo_keys = list(manifest.get("photo_keys", []))
         image_keys = manifest.get("image_keys", [])
+        keep_filenames = manifest.get("keep_filenames", False)
+        jpeg_quality = manifest.get("jpeg_quality")
+        position_csv = manifest.get("position_csv", "")
+
+        # Parse position CSV into lookup dict
+        csv_positions = parse_position_csv(position_csv)
 
         # Auto-classify unclassified images by aspect ratio
         if image_keys:
@@ -529,8 +572,10 @@ def lambda_handler(event, context):
             img_template_str = load_template_from_s3(IMG_TEMPLATE_KEY)
 
             # Process panos and photos
-            pano_meta = process_image_set(bucket, pano_keys, output_prefix, client_name, project_name, file_dt, "Pano", pano_template_str)
-            photo_meta = process_image_set(bucket, photo_keys, output_prefix, client_name, project_name, file_dt, "Photo", img_template_str)
+            pano_meta = process_image_set(bucket, pano_keys, output_prefix, client_name, project_name, file_dt, "Pano", pano_template_str,
+                                          keep_filenames=keep_filenames, jpeg_quality=jpeg_quality, csv_positions=csv_positions)
+            photo_meta = process_image_set(bucket, photo_keys, output_prefix, client_name, project_name, file_dt, "Photo", img_template_str,
+                                           keep_filenames=keep_filenames, jpeg_quality=jpeg_quality, csv_positions=csv_positions)
 
             # Generate CSVs
             first_link = None
@@ -565,13 +610,15 @@ def lambda_handler(event, context):
     return {"statusCode": 200, "body": "OK"}
 
 
-def process_image_set(bucket, s3_keys, output_prefix, client_name, project_name, file_dt, type_str, template_str):
+def process_image_set(bucket, s3_keys, output_prefix, client_name, project_name, file_dt, type_str, template_str,
+                      keep_filenames=False, jpeg_quality=None, csv_positions=None):
     """
     Download raw images from S3, extract metadata, rename, compress, generate HTML,
     upload processed outputs back to S3. Returns list of metadata dicts.
     """
     if not s3_keys:
         return []
+    csv_positions = csv_positions or {}
 
     # Download and collect metadata
     raw_images = []
@@ -587,12 +634,24 @@ def process_image_set(bucket, s3_keys, output_prefix, client_name, project_name,
                     dt = datetime.utcnow()
             else:
                 dt = datetime.utcnow()
+
+            # Original filename from S3 key
+            orig_filename = key.rsplit("/", 1)[-1]
+            orig_base = orig_filename.rsplit(".", 1)[0].lower()
+
+            # Check for CSV position data
+            pos = csv_positions.get(orig_base)
+
             raw_images.append({
                 "s3_key": key,
                 "bytes": img_bytes,
+                "orig_filename": orig_filename,
                 "lat": lat,
                 "lon": lon,
                 "alt": alt,
+                "northing": pos["northing"] if pos else None,
+                "easting": pos["easting"] if pos else None,
+                "csv_elevation": pos["elevation"] if pos else None,
                 "date_time": date_time,
                 "sort_dt": dt,
             })
@@ -602,21 +661,26 @@ def process_image_set(bucket, s3_keys, output_prefix, client_name, project_name,
     # Sort by datetime
     raw_images.sort(key=lambda x: x["sort_dt"])
 
-    # Rename with rolling counter
-    prefix, number = read_photo_counter()
+    # Rolling counter only used when not keeping original filenames
+    if not keep_filenames:
+        prefix, number = read_photo_counter()
+
     results = []
 
     for img_data in raw_images:
-        number += 1
-        if number > 999:
-            number = 1
-            prefix = increment_prefix(prefix)
-
-        final_name = f"{prefix}{number:03d}.jpg"
-        base_name = f"{prefix}{number:03d}"
+        if keep_filenames:
+            final_name = img_data["orig_filename"]
+            base_name = final_name.rsplit(".", 1)[0]
+        else:
+            number += 1
+            if number > 999:
+                number = 1
+                prefix = increment_prefix(prefix)
+            final_name = f"{prefix}{number:03d}.jpg"
+            base_name = f"{prefix}{number:03d}"
 
         # Compress
-        compressed_bytes, content_type = compress_image(img_data["bytes"])
+        compressed_bytes, content_type = compress_image(img_data["bytes"], quality=jpeg_quality)
 
         # Upload compressed image to S3
         img_key = f"{output_prefix}{final_name}"
@@ -655,9 +719,13 @@ def process_image_set(bucket, s3_keys, output_prefix, client_name, project_name,
             "lat": img_data["lat"],
             "lon": img_data["lon"],
             "alt": img_data["alt"],
+            "northing": img_data["northing"],
+            "easting": img_data["easting"],
+            "csv_elevation": img_data["csv_elevation"],
             "date_time": dt_str,
         })
 
-    write_photo_counter(prefix, number)
+    if not keep_filenames:
+        write_photo_counter(prefix, number)
     logger.info("Processed %d %s images", len(results), type_str)
     return results

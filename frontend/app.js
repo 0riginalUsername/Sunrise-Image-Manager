@@ -78,6 +78,13 @@ clientInput.addEventListener('input', () => {
 // Load registry on page load
 loadClientRegistry();
 
+// ── Batch options ────────────────────────────────────────────────────────
+const qualitySlider = document.getElementById('jpegQuality');
+const qualityValue  = document.getElementById('qualityValue');
+qualitySlider.addEventListener('input', () => {
+    qualityValue.textContent = qualitySlider.value;
+});
+
 // ── Auto-classification ──────────────────────────────────────────────────
 /**
  * Read image dimensions and return 'pano' or 'photo'.
@@ -216,6 +223,15 @@ async function startProcessing() {
         return;
     }
 
+    // Read batch options
+    const keepFilenames = document.getElementById('keepFilenames').checked;
+    const jpegQuality = parseInt(document.getElementById('jpegQuality').value, 10);
+    let positionCsv = '';
+    const csvFile = document.getElementById('csvUpload').files[0];
+    if (csvFile) {
+        positionCsv = await csvFile.text();
+    }
+
     const panoEntries = imageFiles.filter(e => e.type === 'pano');
     const photoEntries = imageFiles.filter(e => e.type === 'photo');
 
@@ -289,6 +305,9 @@ async function startProcessing() {
                 file_dt: jobData.file_dt,
                 pano_keys: jobData.pano_uploads.map(u => u.key),
                 photo_keys: jobData.photo_uploads.map(u => u.key),
+                keep_filenames: keepFilenames,
+                jpeg_quality: jpegQuality,
+                position_csv: positionCsv,
             }),
         });
 

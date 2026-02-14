@@ -172,6 +172,9 @@ def handle_submit_job(event):
         "pano_keys": body.get("pano_keys", []),
         "photo_keys": body.get("photo_keys", []),
         "image_keys": body.get("image_keys", []),
+        "keep_filenames": body.get("keep_filenames", False),
+        "jpeg_quality": body.get("jpeg_quality"),
+        "position_csv": body.get("position_csv", ""),
         "submitted_at": datetime.utcnow().isoformat() + "Z",
     }
 
