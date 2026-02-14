@@ -17,10 +17,10 @@ Parameters:
     Description: S3 bucket for uploads, processed output, and static website
   DomainBase:
     Type: String
-    Default: https://www.seihds.com
+    Default: https://pano.seihds.com
   DomainPrefix:
     Type: String
-    Default: /auto
+    Default: ""
   MaxWidth:
     Type: Number
     Default: 8192
@@ -49,7 +49,7 @@ Parameters:
     Description: Comma-separated email addresses
   AllowedOrigin:
     Type: String
-    Default: "*"
+    Default: "https://pano.seihds.com"
     Description: CORS allowed origin for the API (set to your domain in production)
   GeoLayerArn:
     Type: String
