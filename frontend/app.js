@@ -197,7 +197,7 @@ function setProgress(percent, text, isError) {
     statusText.className = 'status-text' + (isError ? ' error' : '');
 }
 
-function showResult(message, link) {
+function showResult(message, link, landingPage) {
     resultSection.classList.add('visible');
     resultMessage.textContent = message;
     if (link) {
@@ -205,6 +205,13 @@ function showResult(message, link) {
         resultLink.style.display = 'inline-block';
     } else {
         resultLink.style.display = 'none';
+    }
+    const landingEl = document.getElementById('landingLink');
+    if (landingPage) {
+        landingEl.href = landingPage;
+        landingEl.style.display = 'inline-block';
+    } else {
+        landingEl.style.display = 'none';
     }
 }
 
@@ -327,7 +334,8 @@ async function startProcessing() {
 
         showResult(
             `All images processed and published. ${panoEntries.length} panoramas and ${photoEntries.length} photos.`,
-            result.first_link || null
+            result.first_link || null,
+            result.landing_page || null
         );
 
     } catch (err) {

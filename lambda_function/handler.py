@@ -70,6 +70,7 @@ EMAIL_TEMPLATE_KEY = os.environ.get("EMAIL_TEMPLATE_KEY", "templates/Email-Repor
 MASTER_DXF_KEY = os.environ.get("MASTER_DXF_KEY", "templates/master.dxf")
 SHAPEFILE_PREFIX = os.environ.get("SHAPEFILE_PREFIX", "templates/NAD83SPCEPSG")
 CLIENTS_KEY = os.environ.get("CLIENTS_KEY", "state/clients.json")
+LANDING_PAGE_FILE = os.path.join(os.path.dirname(__file__), "project_landing.html")
 
 
 # ---------------------------------------------------------------------------
@@ -493,14 +494,95 @@ def register_client_project(client_name, project_name):
 
 
 # ---------------------------------------------------------------------------
+# Project landing page  (index.html + index.json per project)
+# ---------------------------------------------------------------------------
+def update_project_index(bucket, client_name, project_name, file_dt, employee_name,
+                         pano_meta, photo_meta, output_prefix, csv_files=None, dxf_file=None):
+    """Append the current batch to the project index and deploy the landing page."""
+    project_prefix = f"processed/{client_name}/{project_name}/"
+    index_key = f"{project_prefix}index.json"
+
+    # Read existing index or start fresh
+    try:
+        obj = s3.get_object(Bucket=bucket, Key=index_key)
+        index_data = json.loads(obj["Body"].read().decode("utf-8"))
+    except Exception:
+        index_data = {"client_name": client_name, "project_name": project_name, "batches": []}
+
+    # Build image entries (paths relative to project_prefix)
+    images = []
+    for meta in pano_meta:
+        name = meta["base_name"]
+        base = name.rsplit(".", 1)[0]
+        images.append({
+            "filename": name, "type": "pano",
+            "lat": meta.get("lat"), "lon": meta.get("lon"),
+            "northing": meta.get("northing"), "easting": meta.get("easting"),
+            "date_time": meta.get("date_time", ""),
+            "viewer": f"{file_dt}/{base}.htm", "src": f"{file_dt}/{name}",
+        })
+    for meta in photo_meta:
+        name = meta["base_name"]
+        base = name.rsplit(".", 1)[0]
+        images.append({
+            "filename": name, "type": "photo",
+            "lat": meta.get("lat"), "lon": meta.get("lon"),
+            "northing": meta.get("northing"), "easting": meta.get("easting"),
+            "date_time": meta.get("date_time", ""),
+            "viewer": f"{file_dt}/{base}.htm", "src": f"{file_dt}/{name}",
+        })
+
+    # Relativize download paths
+    def rel(key):
+        return key.replace(project_prefix, "") if key else None
+
+    batch_entry = {
+        "file_dt": file_dt,
+        "employee": employee_name,
+        "submitted_at": datetime.utcnow().isoformat() + "Z",
+        "pano_count": len(pano_meta),
+        "photo_count": len(photo_meta),
+        "csv_files": [rel(k) for k in (csv_files or [])],
+        "dxf_file": rel(dxf_file),
+        "images": images,
+    }
+
+    # Replace batch with same file_dt (re-processing), or append
+    index_data["batches"] = [b for b in index_data["batches"] if b["file_dt"] != file_dt]
+    index_data["batches"].append(batch_entry)
+
+    # Write index.json
+    s3.put_object(
+        Bucket=bucket, Key=index_key,
+        Body=json.dumps(index_data, indent=2).encode("utf-8"),
+        ContentType="application/json",
+    )
+
+    # Deploy landing page HTML
+    try:
+        with open(LANDING_PAGE_FILE, "r") as f:
+            landing_html = f.read()
+        s3.put_object(
+            Bucket=bucket, Key=f"{project_prefix}index.html",
+            Body=landing_html.encode("utf-8"),
+            ContentType="text/html",
+        )
+    except Exception as e:
+        logger.warning("Failed to deploy landing page: %s", e)
+
+    logger.info("Updated project index: s3://%s/%s", bucket, index_key)
+
+
+# ---------------------------------------------------------------------------
 # Write a status.json so the desktop client can poll for completion
 # ---------------------------------------------------------------------------
-def write_status(prefix, status, message="", output_prefix="", first_link=""):
+def write_status(prefix, status, message="", output_prefix="", first_link="", landing_page=""):
     body = json.dumps({
         "status": status,
         "message": message,
         "output_prefix": output_prefix,
         "first_link": first_link,
+        "landing_page": landing_page,
         "updated_at": datetime.utcnow().isoformat() + "Z",
     })
     s3.put_object(
@@ -579,19 +661,26 @@ def lambda_handler(event, context):
 
             # Generate CSVs
             first_link = None
+            csv_keys = []
             if pano_meta:
                 csv_content, first_link = generate_csv(pano_meta, client_name, project_name, file_dt, "pano")
                 csv_key = f"{output_prefix}{file_dt}_{client_name}_{project_name}_pano_WGS84.csv"
                 s3.put_object(Bucket=bucket, Key=csv_key, Body=csv_content.encode("utf-8"), ContentType="text/csv")
+                csv_keys.append(csv_key)
             if photo_meta:
                 csv_content, link = generate_csv(photo_meta, client_name, project_name, file_dt, "photo")
                 csv_key = f"{output_prefix}{file_dt}_{client_name}_{project_name}_photo_WGS84.csv"
                 s3.put_object(Bucket=bucket, Key=csv_key, Body=csv_content.encode("utf-8"), ContentType="text/csv")
+                csv_keys.append(csv_key)
                 if not first_link:
                     first_link = link
 
             # Generate DXF (if geo layer is available)
-            export_dxf(bucket, pano_meta, photo_meta, client_name, project_name, file_dt, output_prefix)
+            dxf_key = export_dxf(bucket, pano_meta, photo_meta, client_name, project_name, file_dt, output_prefix)
+
+            # Update project landing page (appendable across batches)
+            update_project_index(bucket, client_name, project_name, file_dt, employee_name,
+                                 pano_meta, photo_meta, output_prefix, csv_files=csv_keys, dxf_file=dxf_key)
 
             # Send email
             send_email(project_name, client_name, file_dt, employee_name, first_link, output_prefix)
@@ -599,7 +688,8 @@ def lambda_handler(event, context):
             # Register client/project in the registry
             register_client_project(client_name, project_name)
 
-            write_status(job_prefix, "complete", "Processing finished", output_prefix, first_link or "")
+            landing_url = f"{DOMAIN_BASE}{DOMAIN_PREFIX}/{client_name}/{project_name}/index.html"
+            write_status(job_prefix, "complete", "Processing finished", output_prefix, first_link or "", landing_url)
             logger.info("Job complete: %s", output_prefix)
 
         except Exception as e:

@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Project | Sunrise Engineering</title>
+    <link rel="icon" type="image/x-icon" href="../../frontend/favicon.ico">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+    <style>
+        :root {
+            --navy: #113e59;
+            --gray: #a7a9ac;
+            --yellow: #ffd457;
+            --ruby: #d2342e;
+            --white: #ffffff;
+            --light-bg: #f8f9fa;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: 'Segoe UI', 'PT Sans', Arial, sans-serif;
+            background: var(--light-bg);
+            color: var(--navy);
+        }
+
+        /* ── Header ── */
+        .header {
+            background: var(--navy);
+            padding: 16px 32px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .header-left { display: flex; align-items: center; gap: 20px; }
+        .header img { height: 36px; }
+        .header h1 { color: var(--white); font-size: 20px; font-weight: 600; }
+        .client-badge {
+            background: var(--yellow);
+            color: var(--navy);
+            padding: 4px 14px;
+            border-radius: 4px;
+            font-size: 13px;
+            font-weight: 700;
+        }
+
+        /* ── Stats bar ── */
+        .stats-bar {
+            background: var(--white);
+            border-bottom: 2px solid var(--yellow);
+            padding: 14px 32px;
+            display: none;
+            gap: 32px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        .stats-bar.visible { display: flex; }
+        .stat { display: flex; align-items: baseline; gap: 6px; }
+        .stat-value { font-size: 22px; font-weight: 700; color: var(--navy); }
+        .stat-label { font-size: 13px; color: var(--gray); }
+
+        /* ── Map ── */
+        #map { width: 100%; height: 450px; }
+        .no-map-note {
+            padding: 40px;
+            text-align: center;
+            color: var(--gray);
+            font-size: 14px;
+            background: #e9ecef;
+        }
+
+        /* ── Container ── */
+        .container { max-width: 1400px; margin: 0 auto; padding: 24px; }
+
+        /* ── Filter tabs ── */
+        .filter-bar {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+        .filter-btn {
+            padding: 8px 18px;
+            border: 2px solid var(--navy);
+            background: var(--white);
+            color: var(--navy);
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .filter-btn:hover { background: #eef5fb; }
+        .filter-btn.active { background: var(--navy); color: var(--white); }
+
+        /* ── Batch headers ── */
+        .batch-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 16px;
+            background: var(--navy);
+            color: var(--white);
+            border-radius: 8px 8px 0 0;
+            margin-top: 24px;
+            font-size: 14px;
+        }
+        .batch-header:first-child { margin-top: 0; }
+        .batch-downloads a {
+            color: var(--yellow);
+            text-decoration: none;
+            font-size: 12px;
+            margin-left: 12px;
+        }
+        .batch-downloads a:hover { text-decoration: underline; }
+
+        /* ── Gallery grid ── */
+        .gallery-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 12px;
+            padding: 16px;
+            background: var(--white);
+            border-radius: 0 0 8px 8px;
+            margin-bottom: 4px;
+        }
+        .gallery-card {
+            border-radius: 6px;
+            overflow: hidden;
+            cursor: pointer;
+            transition: transform 0.15s, box-shadow 0.15s;
+            border: 1px solid #e0e0e0;
+        }
+        .gallery-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.12);
+        }
+        .gallery-card img {
+            width: 100%;
+            height: 150px;
+            object-fit: cover;
+            display: block;
+            background: #e9ecef;
+        }
+        .card-info {
+            padding: 8px 10px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .card-name { font-size: 12px; font-weight: 600; color: var(--navy); }
+        .card-date { font-size: 11px; color: var(--gray); }
+        .type-badge {
+            display: inline-block;
+            font-size: 9px;
+            font-weight: 700;
+            padding: 2px 5px;
+            border-radius: 3px;
+        }
+        .badge-pano { background: var(--navy); color: var(--white); }
+        .badge-photo { background: var(--yellow); color: var(--navy); }
+
+        /* ── Lightbox ── */
+        .lightbox {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.92);
+            z-index: 10000;
+            justify-content: center;
+            align-items: center;
+        }
+        .lightbox.open { display: flex; }
+        .lightbox-inner {
+            position: relative;
+            max-width: 92vw;
+            max-height: 92vh;
+            text-align: center;
+        }
+        .lightbox-inner img {
+            max-width: 90vw;
+            max-height: 80vh;
+            border-radius: 4px;
+        }
+        .lightbox-close {
+            position: absolute;
+            top: -44px; right: 0;
+            background: none; border: none;
+            color: white; font-size: 32px;
+            cursor: pointer;
+        }
+        .lightbox-nav {
+            position: absolute;
+            top: 50%;
+            transform: translateY(-50%);
+            background: rgba(255,255,255,0.15);
+            border: none; color: white;
+            font-size: 36px;
+            padding: 20px 14px;
+            cursor: pointer;
+            border-radius: 4px;
+        }
+        .lightbox-nav:hover { background: rgba(255,255,255,0.25); }
+        .lightbox-prev { left: -60px; }
+        .lightbox-next { right: -60px; }
+        .lightbox-info {
+            color: white;
+            padding: 12px 0;
+            font-size: 14px;
+            display: flex;
+            justify-content: center;
+            gap: 16px;
+            align-items: center;
+        }
+        .lightbox-info a {
+            color: var(--yellow);
+            text-decoration: none;
+            font-weight: 600;
+        }
+
+        /* ── Loading ── */
+        .loading {
+            text-align: center;
+            padding: 80px 24px;
+            color: var(--gray);
+        }
+        .spinner {
+            display: inline-block;
+            width: 32px; height: 32px;
+            border: 3px solid #e0e0e0;
+            border-top-color: var(--navy);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin-bottom: 12px;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* ── Footer ── */
+        .footer {
+            text-align: center;
+            padding: 32px;
+            color: var(--gray);
+            font-size: 12px;
+            border-top: 1px solid #e0e0e0;
+            margin-top: 40px;
+        }
+
+        /* ── Responsive ── */
+        @media (max-width: 768px) {
+            .header { flex-direction: column; gap: 8px; padding: 12px 16px; }
+            .stats-bar { padding: 12px 16px; gap: 16px; }
+            .stat-value { font-size: 18px; }
+            .container { padding: 16px; }
+            .gallery-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+            .lightbox-prev, .lightbox-next { display: none; }
+            #map { height: 300px; }
+            .batch-header { flex-direction: column; gap: 6px; align-items: flex-start; }
+        }
+    </style>
+</head>
+<body>
+
+<!-- Header -->
+<div class="header">
+    <div class="header-left">
+        <img alt="Sunrise Engineering" src="https://sunrise-eng.com/wp-content/themes/sunrise-eng-2018/assets/img/logo-sunrise-white.svg" />
+        <h1 id="projectTitle">Loading...</h1>
+    </div>
+    <span class="client-badge" id="clientBadge"></span>
+</div>
+
+<!-- Stats -->
+<div class="stats-bar" id="statsBar">
+    <div class="stat"><span class="stat-value" id="statTotal">0</span><span class="stat-label">Images</span></div>
+    <div class="stat"><span class="stat-value" id="statPanos">0</span><span class="stat-label">Panoramas</span></div>
+    <div class="stat"><span class="stat-value" id="statPhotos">0</span><span class="stat-label">Photos</span></div>
+    <div class="stat"><span class="stat-value" id="statSessions">0</span><span class="stat-label">Sessions</span></div>
+    <div class="stat"><span class="stat-label" id="statUpdated"></span></div>
+</div>
+
+<!-- Map -->
+<div id="mapSection">
+    <div id="map"></div>
+</div>
+
+<!-- Loading -->
+<div class="loading" id="loading">
+    <div class="spinner"></div>
+    <div>Loading project data...</div>
+</div>
+
+<!-- Gallery -->
+<div class="container" id="galleryContainer" style="display:none;">
+    <div class="filter-bar">
+        <button class="filter-btn active" data-filter="all">All</button>
+        <button class="filter-btn" data-filter="pano">Panoramas</button>
+        <button class="filter-btn" data-filter="photo">Photos</button>
+    </div>
+    <div id="galleryContent"></div>
+</div>
+
+<!-- Lightbox -->
+<div class="lightbox" id="lightbox">
+    <div class="lightbox-inner">
+        <button class="lightbox-close" onclick="closeLightbox()">&times;</button>
+        <button class="lightbox-nav lightbox-prev" onclick="navLightbox(-1)">&lsaquo;</button>
+        <img id="lightboxImg" alt="" />
+        <button class="lightbox-nav lightbox-next" onclick="navLightbox(1)">&rsaquo;</button>
+        <div class="lightbox-info">
+            <span id="lightboxName"></span>
+            <span id="lightboxDate"></span>
+            <a id="lightboxViewer" href="#" target="_blank">Open Viewer</a>
+        </div>
+    </div>
+</div>
+
+<!-- Footer -->
+<div class="footer">
+    Sunrise Engineering &mdash; Panoramic Image Management System
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+<script>
+/* ── State ── */
+let projectData = null;
+let allImages = [];
+let filteredImages = [];
+let currentIdx = -1;
+let map = null;
+
+/* ── Init ── */
+async function init() {
+    try {
+        const resp = await fetch('index.json');
+        if (!resp.ok) throw new Error('Failed to load');
+        projectData = await resp.json();
+
+        projectData.batches.forEach(batch => {
+            batch.images.forEach(img => allImages.push(Object.assign({}, img, { batch: batch })));
+        });
+
+        document.getElementById('loading').style.display = 'none';
+        renderHeader();
+        renderStats();
+        renderMap();
+        renderGallery('all');
+        document.getElementById('galleryContainer').style.display = 'block';
+        document.getElementById('statsBar').classList.add('visible');
+    } catch (err) {
+        document.getElementById('loading').innerHTML = '<p>Could not load project data.</p>';
+        console.error(err);
+    }
+}
+
+/* ── Header ── */
+function renderHeader() {
+    var name = projectData.project_name.replace(/_/g, ' ');
+    var client = projectData.client_name.replace(/_/g, ' ');
+    document.title = name + ' | ' + client + ' | Sunrise Engineering';
+    document.getElementById('projectTitle').textContent = name;
+    document.getElementById('clientBadge').textContent = client;
+}
+
+/* ── Stats ── */
+function renderStats() {
+    var panos = 0, photos = 0;
+    allImages.forEach(function(img) { if (img.type === 'pano') panos++; else photos++; });
+    document.getElementById('statTotal').textContent = allImages.length;
+    document.getElementById('statPanos').textContent = panos;
+    document.getElementById('statPhotos').textContent = photos;
+    document.getElementById('statSessions').textContent = projectData.batches.length;
+    if (projectData.batches.length > 0) {
+        var latest = projectData.batches[projectData.batches.length - 1];
+        document.getElementById('statUpdated').textContent = 'Last updated: ' + (latest.submitted_at || '').split('T')[0];
+    }
+}
+
+/* ── Map ── */
+function renderMap() {
+    var geoImages = allImages.filter(function(img) { return img.lat != null && img.lon != null; });
+
+    if (geoImages.length === 0) {
+        document.getElementById('mapSection').innerHTML = '<div class="no-map-note">No GPS data available for mapping. Images are shown in the gallery below.</div>';
+        return;
+    }
+
+    var satellite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+        attribution: 'Esri', maxZoom: 19
+    });
+    var streets = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; OpenStreetMap', maxZoom: 19
+    });
+
+    map = L.map('map', { layers: [satellite] });
+    L.control.layers({ 'Satellite': satellite, 'Street Map': streets }).addTo(map);
+
+    var markers = L.markerClusterGroup();
+
+    geoImages.forEach(function(img) {
+        var isPano = img.type === 'pano';
+        var marker = L.circleMarker([img.lat, img.lon], {
+            radius: 8,
+            fillColor: isPano ? '#113e59' : '#ffd457',
+            color: '#fff',
+            weight: 2,
+            fillOpacity: 0.9
+        });
+
+        var label = isPano ? 'View 360&deg; Panorama' : 'View Photo';
+        var popup = '<div style="text-align:center;min-width:180px;">'
+            + '<img src="' + img.src + '" style="width:180px;height:auto;border-radius:4px;margin-bottom:6px;" loading="lazy" />'
+            + '<div style="font-weight:600;font-size:13px;">' + img.filename.replace('.jpg', '') + '</div>'
+            + '<div style="font-size:11px;color:#666;">' + (img.date_time || '') + '</div>'
+            + '<a href="' + img.viewer + '" target="_blank" style="display:inline-block;margin-top:6px;padding:4px 12px;background:#113e59;color:white;border-radius:4px;font-size:12px;text-decoration:none;">' + label + '</a>'
+            + '</div>';
+        marker.bindPopup(popup, { maxWidth: 220 });
+        markers.addLayer(marker);
+    });
+
+    map.addLayer(markers);
+    map.fitBounds(markers.getBounds().pad(0.1));
+
+    /* Legend */
+    var legend = L.control({ position: 'bottomright' });
+    legend.onAdd = function() {
+        var div = L.DomUtil.create('div');
+        div.style.cssText = 'background:white;padding:8px 12px;border-radius:4px;box-shadow:0 1px 4px rgba(0,0,0,0.2);font-size:12px;line-height:1.8;';
+        div.innerHTML =
+            '<div style="display:flex;align-items:center;gap:6px;"><span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:#113e59;border:2px solid white;box-shadow:0 0 0 1px #113e59;"></span> Panorama</div>'
+          + '<div style="display:flex;align-items:center;gap:6px;"><span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:#ffd457;border:2px solid white;box-shadow:0 0 0 1px #ffd457;"></span> Photo</div>';
+        return div;
+    };
+    legend.addTo(map);
+}
+
+/* ── Gallery ── */
+function renderGallery(filter) {
+    filteredImages = filter === 'all' ? allImages.slice() : allImages.filter(function(img) { return img.type === filter; });
+
+    var container = document.getElementById('galleryContent');
+    container.innerHTML = '';
+
+    /* Group by batch */
+    var batchGroups = [];
+    var batchMap = {};
+    filteredImages.forEach(function(img) {
+        var key = img.batch.file_dt;
+        if (!batchMap[key]) {
+            batchMap[key] = { batch: img.batch, images: [] };
+            batchGroups.push(batchMap[key]);
+        }
+        batchMap[key].images.push(img);
+    });
+
+    /* Render newest first */
+    batchGroups.reverse().forEach(function(group) {
+        var batch = group.batch;
+
+        /* Batch header with downloads */
+        var header = document.createElement('div');
+        header.className = 'batch-header';
+        var dateStr = batch.file_dt.replace(/_/g, ' ');
+        var downloads = '';
+        (batch.csv_files || []).forEach(function(f) {
+            var label = f.indexOf('pano') !== -1 ? 'Pano CSV' : 'Photo CSV';
+            downloads += '<a href="' + f + '" download>' + label + '</a>';
+        });
+        if (batch.dxf_file) {
+            downloads += '<a href="' + batch.dxf_file + '" download>DXF</a>';
+        }
+        header.innerHTML = '<span>' + dateStr + ' &mdash; ' + batch.employee + ' (' + group.images.length + ' images)</span>'
+            + '<span class="batch-downloads">' + downloads + '</span>';
+        container.appendChild(header);
+
+        /* Gallery grid */
+        var grid = document.createElement('div');
+        grid.className = 'gallery-grid';
+
+        group.images.forEach(function(img) {
+            var globalIdx = filteredImages.indexOf(img);
+            var card = document.createElement('div');
+            card.className = 'gallery-card';
+            card.onclick = (function(i) { return function() { openLightbox(i); }; })(globalIdx);
+
+            var badgeClass = img.type === 'pano' ? 'badge-pano' : 'badge-photo';
+            var badgeLabel = img.type === 'pano' ? 'PANO' : 'PHOTO';
+            card.innerHTML = '<img src="' + img.src + '" loading="lazy" alt="' + img.filename + '" />'
+                + '<div class="card-info"><div>'
+                + '<div class="card-name">' + img.filename.replace('.jpg', '') + '</div>'
+                + '<div class="card-date">' + (img.date_time || '') + '</div>'
+                + '</div><span class="type-badge ' + badgeClass + '">' + badgeLabel + '</span></div>';
+            grid.appendChild(card);
+        });
+
+        container.appendChild(grid);
+    });
+}
+
+/* Filter buttons */
+document.querySelectorAll('.filter-btn').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+        document.querySelectorAll('.filter-btn').forEach(function(b) { b.classList.remove('active'); });
+        btn.classList.add('active');
+        renderGallery(btn.getAttribute('data-filter'));
+    });
+});
+
+/* ── Lightbox ── */
+function openLightbox(idx) {
+    currentIdx = idx;
+    updateLightbox();
+    document.getElementById('lightbox').classList.add('open');
+}
+
+function closeLightbox() {
+    document.getElementById('lightbox').classList.remove('open');
+    currentIdx = -1;
+}
+
+function navLightbox(dir) {
+    var n = currentIdx + dir;
+    if (n >= 0 && n < filteredImages.length) {
+        currentIdx = n;
+        updateLightbox();
+    }
+}
+
+function updateLightbox() {
+    var img = filteredImages[currentIdx];
+    if (!img) return;
+    document.getElementById('lightboxImg').src = img.src;
+    document.getElementById('lightboxName').textContent = img.filename.replace('.jpg', '');
+    document.getElementById('lightboxDate').textContent = img.date_time || '';
+    var viewerLink = document.getElementById('lightboxViewer');
+    viewerLink.href = img.viewer;
+    viewerLink.textContent = img.type === 'pano' ? 'Open 360\u00b0 Viewer \u2192' : 'Open Viewer \u2192';
+}
+
+/* Keyboard navigation */
+document.addEventListener('keydown', function(e) {
+    if (!document.getElementById('lightbox').classList.contains('open')) return;
+    if (e.key === 'Escape') closeLightbox();
+    if (e.key === 'ArrowLeft') navLightbox(-1);
+    if (e.key === 'ArrowRight') navLightbox(1);
+});
+
+/* Close on backdrop click */
+document.getElementById('lightbox').addEventListener('click', function(e) {
+    if (e.target === document.getElementById('lightbox')) closeLightbox();
+});
+
+/* ── Start ── */
+init();
+</script>
+</body>
+</html>
