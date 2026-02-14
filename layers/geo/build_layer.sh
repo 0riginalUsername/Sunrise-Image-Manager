@@ -58,7 +58,19 @@ docker run --rm \
 # Zip it up
 echo ">> Creating ZIP..."
 cd "$SCRIPT_DIR/build"
-zip -r9 "$ZIP_FILE" python/
+if command -v zip &>/dev/null; then
+    zip -r9 "$ZIP_FILE" python/
+else
+    echo "   (zip not found — using Python zipfile)"
+    python3 -c "
+import zipfile, os, sys
+with zipfile.ZipFile(sys.argv[1], 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
+    for root, dirs, files in os.walk('python'):
+        for f in files:
+            fp = os.path.join(root, f)
+            zf.write(fp)
+" "$ZIP_FILE"
+fi
 
 LAYER_SIZE=$(du -sh "$ZIP_FILE" | cut -f1)
 echo ">> Layer ZIP: $ZIP_FILE ($LAYER_SIZE)"
