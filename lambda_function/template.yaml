@@ -115,6 +115,7 @@ Resources:
           S3_BUCKET: !Ref S3BucketName
           PRESIGN_EXPIRY: "3600"
           ALLOWED_ORIGIN: !Ref AllowedOrigin
+          CLIENTS_KEY: state/clients.json
       Policies:
         - S3CrudPolicy:
             BucketName: !Ref S3BucketName
@@ -155,6 +156,18 @@ Resources:
             RestApiId: !Ref ApiGateway
             Path: /api/job-status
             Method: OPTIONS
+        GetClients:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /api/clients
+            Method: GET
+        CorsClients:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /api/clients
+            Method: OPTIONS
 
   # ── Processing Lambda (image compression, HTML gen, CSV, DXF, email) ──
   ProcessingFunction:
@@ -185,6 +198,7 @@ Resources:
           EMAIL_TEMPLATE_KEY: templates/Email-Report-Template.htm
           MASTER_DXF_KEY: templates/master.dxf
           SHAPEFILE_PREFIX: templates/NAD83SPCEPSG
+          CLIENTS_KEY: state/clients.json
       Policies:
         - S3CrudPolicy:
             BucketName: !Ref S3BucketName

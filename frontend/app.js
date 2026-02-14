@@ -17,6 +17,8 @@ const PANO_ASPECT_RATIO = 1.9;  // width/height >= this ⇒ panoramic
 // ── State ──────────────────────────────────────────────────────────────────
 // Each entry: { file: File, type: 'pano'|'photo'|'classifying' }
 let imageFiles = [];
+// Client/project registry: { "ClientName": ["Project1", "Project2"], ... }
+let clientRegistry = {};
 
 // ── DOM refs ───────────────────────────────────────────────────────────────
 const dropZone           = document.getElementById('dropZone');
@@ -30,6 +32,51 @@ const statusText         = document.getElementById('statusText');
 const resultSection      = document.getElementById('resultSection');
 const resultMessage      = document.getElementById('resultMessage');
 const resultLink         = document.getElementById('resultLink');
+const clientInput        = document.getElementById('clientName');
+const projectInput       = document.getElementById('projectName');
+const clientDatalist     = document.getElementById('clientList');
+const projectDatalist    = document.getElementById('projectList');
+
+// ── Client/project registry ─────────────────────────────────────────────
+async function loadClientRegistry() {
+    try {
+        const resp = await fetch(`${API_BASE}/clients`);
+        if (resp.ok) {
+            const data = await resp.json();
+            clientRegistry = data.clients || {};
+            populateClientList();
+        }
+    } catch (err) {
+        console.warn('Could not load client registry:', err);
+    }
+}
+
+function populateClientList() {
+    clientDatalist.innerHTML = '';
+    for (const client of Object.keys(clientRegistry).sort()) {
+        const opt = document.createElement('option');
+        opt.value = client;
+        clientDatalist.appendChild(opt);
+    }
+}
+
+function populateProjectList(clientName) {
+    projectDatalist.innerHTML = '';
+    const projects = clientRegistry[clientName] || [];
+    for (const proj of projects) {
+        const opt = document.createElement('option');
+        opt.value = proj;
+        projectDatalist.appendChild(opt);
+    }
+}
+
+// When the client input changes, update the project suggestions
+clientInput.addEventListener('input', () => {
+    populateProjectList(clientInput.value.trim());
+});
+
+// Load registry on page load
+loadClientRegistry();
 
 // ── Auto-classification ──────────────────────────────────────────────────
 /**

@@ -319,11 +319,13 @@
             <div class="form-row">
                 <div class="form-group">
                     <label for="clientName">Client Name</label>
-                    <input type="text" id="clientName" placeholder="Enter client name" required>
+                    <input type="text" id="clientName" list="clientList" placeholder="Select or type new client" autocomplete="off" required>
+                    <datalist id="clientList"></datalist>
                 </div>
                 <div class="form-group">
                     <label for="projectName">Project Name</label>
-                    <input type="text" id="projectName" placeholder="Enter project name" required>
+                    <input type="text" id="projectName" list="projectList" placeholder="Select or type new project" autocomplete="off" required>
+                    <datalist id="projectList"></datalist>
                 </div>
                 <div class="form-group">
                     <label for="employeeName">Employee</label>

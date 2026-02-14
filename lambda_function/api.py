@@ -24,6 +24,7 @@ s3 = boto3.client("s3")
 BUCKET = os.environ.get("S3_BUCKET", "sunrise-image-manager")
 PRESIGN_EXPIRY = int(os.environ.get("PRESIGN_EXPIRY", "3600"))  # 1 hour
 ALLOWED_ORIGIN = os.environ.get("ALLOWED_ORIGIN", "*")
+CLIENTS_KEY = os.environ.get("CLIENTS_KEY", "state/clients.json")
 
 
 def cors_response(status_code, body):
@@ -55,6 +56,8 @@ def lambda_handler(event, context):
         return handle_submit_job(event)
     elif path == "/api/job-status" and http_method == "GET":
         return handle_job_status(event)
+    elif path == "/api/clients" and http_method == "GET":
+        return handle_get_clients(event)
     else:
         return cors_response(404, {"error": "Not found"})
 
@@ -209,3 +212,26 @@ def handle_job_status(event):
     except Exception as e:
         logger.error("Error reading status: %s", e)
         return cors_response(500, {"error": "Failed to read job status"})
+
+
+def handle_get_clients(event):
+    """
+    Return the client/project registry.
+
+    Response:
+    {
+        "clients": {
+            "Ogden_City": ["Main_St_Survey", "Water_Line"],
+            "UDOT": ["I15_Bridge"]
+        }
+    }
+    """
+    try:
+        obj = s3.get_object(Bucket=BUCKET, Key=CLIENTS_KEY)
+        clients = json.loads(obj["Body"].read().decode("utf-8"))
+    except s3.exceptions.NoSuchKey:
+        clients = {}
+    except Exception as e:
+        logger.error("Error reading clients registry: %s", e)
+        clients = {}
+    return cors_response(200, {"clients": clients})

@@ -69,6 +69,7 @@ IMG_TEMPLATE_KEY = os.environ.get("IMG_TEMPLATE_KEY", "templates/img-Template.ht
 EMAIL_TEMPLATE_KEY = os.environ.get("EMAIL_TEMPLATE_KEY", "templates/Email-Report-Template.htm")
 MASTER_DXF_KEY = os.environ.get("MASTER_DXF_KEY", "templates/master.dxf")
 SHAPEFILE_PREFIX = os.environ.get("SHAPEFILE_PREFIX", "templates/NAD83SPCEPSG")
+CLIENTS_KEY = os.environ.get("CLIENTS_KEY", "state/clients.json")
 
 
 # ---------------------------------------------------------------------------
@@ -428,6 +429,33 @@ def export_dxf(bucket, pano_meta, photo_meta, client_name, project_name, file_dt
 
 
 # ---------------------------------------------------------------------------
+# Client/project registry  (state/clients.json in S3)
+# ---------------------------------------------------------------------------
+def register_client_project(client_name, project_name):
+    """Add client/project to the registry if not already present."""
+    try:
+        try:
+            obj = s3.get_object(Bucket=BUCKET, Key=CLIENTS_KEY)
+            clients = json.loads(obj["Body"].read().decode("utf-8"))
+        except Exception:
+            clients = {}
+
+        projects = clients.get(client_name, [])
+        if project_name not in projects:
+            projects.append(project_name)
+            clients[client_name] = sorted(projects)
+            s3.put_object(
+                Bucket=BUCKET,
+                Key=CLIENTS_KEY,
+                Body=json.dumps(clients, indent=2).encode("utf-8"),
+                ContentType="application/json",
+            )
+            logger.info("Registered client/project: %s / %s", client_name, project_name)
+    except Exception as e:
+        logger.warning("Failed to update client registry: %s", e)
+
+
+# ---------------------------------------------------------------------------
 # Write a status.json so the desktop client can poll for completion
 # ---------------------------------------------------------------------------
 def write_status(prefix, status, message="", output_prefix="", first_link=""):
@@ -522,6 +550,9 @@ def lambda_handler(event, context):
 
             # Send email
             send_email(project_name, client_name, file_dt, employee_name, first_link, output_prefix)
+
+            # Register client/project in the registry
+            register_client_project(client_name, project_name)
 
             write_status(job_prefix, "complete", "Processing finished", output_prefix, first_link or "")
             logger.info("Job complete: %s", output_prefix)
