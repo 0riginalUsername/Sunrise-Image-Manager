@@ -76,6 +76,8 @@ def lambda_handler(event, context):
         return handle_job_status(event)
     elif path == "/api/clients" and http_method == "GET":
         return handle_get_clients(event)
+    elif path == "/api/project-password" and http_method == "POST":
+        return handle_manage_project_password(event)
     elif path == "/api/project-auth" and http_method == "GET":
         return handle_project_auth_check(event)
     elif path == "/api/project-auth" and http_method == "POST":
@@ -275,6 +277,72 @@ def handle_get_clients(event):
         logger.error("Error reading clients registry: %s", e)
         clients = {}
     return cors_response(200, {"clients": clients})
+
+
+def handle_manage_project_password(event):
+    """
+    Set, update, or remove a project password (requires Cognito auth).
+
+    Expects JSON body:
+    {
+        "client": "ClientName",
+        "project": "ProjectName",
+        "password": "new-password"     // set/update
+        // OR
+        "password": ""                 // remove
+        // OR
+        "action": "remove"             // remove
+    }
+
+    Response: { "message": "...", "protected": true/false }
+    """
+    try:
+        body = json.loads(event.get("body", "{}"))
+    except (json.JSONDecodeError, TypeError):
+        return cors_response(400, {"error": "Invalid JSON body"})
+
+    client = body.get("client", "").strip().replace(" ", "_")
+    project = body.get("project", "").strip().replace(" ", "_")
+    action = body.get("action", "")
+    password = body.get("password", "")
+
+    if not client or not project:
+        return cors_response(400, {"error": "client and project are required"})
+
+    auth_key = f"state/project-auth/{client}/{project}.json"
+
+    # Remove password
+    if action == "remove" or (not password and action != "check"):
+        try:
+            s3.delete_object(Bucket=BUCKET, Key=auth_key)
+            logger.info("Removed project password for %s/%s", client, project)
+            return cors_response(200, {"message": "Password removed", "protected": False})
+        except Exception as e:
+            logger.error("Error removing project password: %s", e)
+            return cors_response(500, {"error": "Failed to remove password"})
+
+    # Check current status
+    if action == "check":
+        try:
+            s3.head_object(Bucket=BUCKET, Key=auth_key)
+            return cors_response(200, {"protected": True})
+        except Exception:
+            return cors_response(200, {"protected": False})
+
+    # Set/update password
+    pw_hash, pw_salt = hash_password(password)
+    try:
+        s3.put_object(
+            Bucket=BUCKET,
+            Key=auth_key,
+            Body=json.dumps({"hash": pw_hash, "salt": pw_salt}).encode("utf-8"),
+            ContentType="application/json",
+        )
+        logger.info("Set project password for %s/%s", client, project)
+        return cors_response(200, {"message": "Password set", "protected": True})
+    except Exception as e:
+        logger.error("Error setting project password: %s", e)
+        return cors_response(500, {"error": "Failed to set password"})
 
 
 def handle_project_auth_check(event):

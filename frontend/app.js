@@ -261,10 +261,140 @@ function populateProjectList(clientName) {
     }
 }
 
-// When the client input changes, update the project suggestions
+// When the client input changes, update the project suggestions and check password
 clientInput.addEventListener('input', () => {
     populateProjectList(clientInput.value.trim());
+    checkProjectPasswordStatus();
 });
+
+// When the project input changes, check password status
+projectInput.addEventListener('input', () => {
+    checkProjectPasswordStatus();
+});
+
+// ── Project password management ─────────────────────────────────────────
+let pwCheckTimeout = null;
+
+function checkProjectPasswordStatus() {
+    const client = clientInput.value.trim();
+    const project = projectInput.value.trim();
+    const panel = document.getElementById('pwManagePanel');
+
+    // Only show for existing client+project combos
+    if (!client || !project || !clientRegistry[client] || !clientRegistry[client].includes(project)) {
+        panel.classList.remove('visible');
+        return;
+    }
+
+    panel.classList.add('visible');
+    document.getElementById('pwBadge').textContent = 'checking...';
+    document.getElementById('pwBadge').className = 'pw-badge';
+    document.getElementById('pwMsg').textContent = '';
+
+    // Debounce the API call
+    clearTimeout(pwCheckTimeout);
+    pwCheckTimeout = setTimeout(async () => {
+        try {
+            const resp = await fetch(`${API_BASE}/project-password`, {
+                method: 'POST',
+                headers: authHeaders(),
+                body: JSON.stringify({ client, project, action: 'check' }),
+            });
+            if (!resp.ok) return;
+            const data = await resp.json();
+            updatePwBadge(data.protected);
+        } catch (err) {
+            console.warn('Could not check project password status:', err);
+        }
+    }, 300);
+}
+
+function updatePwBadge(isProtected) {
+    const badge = document.getElementById('pwBadge');
+    const removeBtn = document.getElementById('pwRemoveBtn');
+    const setBtn = document.getElementById('pwSetBtn');
+    if (isProtected) {
+        badge.textContent = 'ENABLED';
+        badge.className = 'pw-badge pw-badge-on';
+        removeBtn.style.display = 'inline-block';
+        setBtn.textContent = 'Change Password';
+    } else {
+        badge.textContent = 'NONE';
+        badge.className = 'pw-badge pw-badge-off';
+        removeBtn.style.display = 'none';
+        setBtn.textContent = 'Set Password';
+    }
+}
+
+async function setProjectPassword() {
+    const client = clientInput.value.trim();
+    const project = projectInput.value.trim();
+    const password = document.getElementById('pwManageInput').value;
+    const msgEl = document.getElementById('pwMsg');
+    msgEl.textContent = '';
+
+    if (!password) {
+        msgEl.textContent = 'Enter a password first.';
+        msgEl.className = 'pw-msg pw-msg-err';
+        return;
+    }
+
+    document.getElementById('pwSetBtn').disabled = true;
+    try {
+        const resp = await fetch(`${API_BASE}/project-password`, {
+            method: 'POST',
+            headers: authHeaders(),
+            body: JSON.stringify({ client, project, password }),
+        });
+        const data = await resp.json();
+        if (resp.ok) {
+            msgEl.textContent = data.message || 'Password set.';
+            msgEl.className = 'pw-msg pw-msg-ok';
+            document.getElementById('pwManageInput').value = '';
+            updatePwBadge(true);
+        } else {
+            msgEl.textContent = data.error || 'Failed to set password.';
+            msgEl.className = 'pw-msg pw-msg-err';
+        }
+    } catch (err) {
+        msgEl.textContent = 'Request failed.';
+        msgEl.className = 'pw-msg pw-msg-err';
+    } finally {
+        document.getElementById('pwSetBtn').disabled = false;
+    }
+}
+
+async function removeProjectPassword() {
+    const client = clientInput.value.trim();
+    const project = projectInput.value.trim();
+    const msgEl = document.getElementById('pwMsg');
+    msgEl.textContent = '';
+
+    if (!confirm('Remove password protection from this project?')) return;
+
+    document.getElementById('pwRemoveBtn').disabled = true;
+    try {
+        const resp = await fetch(`${API_BASE}/project-password`, {
+            method: 'POST',
+            headers: authHeaders(),
+            body: JSON.stringify({ client, project, action: 'remove' }),
+        });
+        const data = await resp.json();
+        if (resp.ok) {
+            msgEl.textContent = data.message || 'Password removed.';
+            msgEl.className = 'pw-msg pw-msg-ok';
+            updatePwBadge(false);
+        } else {
+            msgEl.textContent = data.error || 'Failed to remove password.';
+            msgEl.className = 'pw-msg pw-msg-err';
+        }
+    } catch (err) {
+        msgEl.textContent = 'Request failed.';
+        msgEl.className = 'pw-msg pw-msg-err';
+    } finally {
+        document.getElementById('pwRemoveBtn').disabled = false;
+    }
+}
 
 // ── Batch options ────────────────────────────────────────────────────────
 const qualitySlider = document.getElementById('jpegQuality');

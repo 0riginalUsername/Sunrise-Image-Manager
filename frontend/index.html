@@ -411,6 +411,67 @@
             margin-bottom: 14px;
         }
 
+        /* ── Password management panel ── */
+        .pw-manage {
+            display: none;
+            margin-top: 12px;
+            padding: 14px 16px;
+            background: #f0f4f8;
+            border-radius: 8px;
+            border: 1px solid #d0d8e0;
+        }
+        .pw-manage.visible { display: block; }
+        .pw-manage .pw-status {
+            font-size: 13px;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .pw-manage .pw-status .pw-badge {
+            display: inline-block;
+            font-size: 11px;
+            font-weight: 700;
+            padding: 2px 8px;
+            border-radius: 3px;
+        }
+        .pw-badge-on { background: var(--sunrise-navy); color: var(--sunrise-white); }
+        .pw-badge-off { background: #e9ecef; color: #666; }
+        .pw-manage .pw-actions {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .pw-manage input[type="password"] {
+            padding: 8px 12px;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            font-size: 13px;
+            flex: 1;
+            min-width: 160px;
+        }
+        .pw-manage .btn-pw {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+        .pw-manage .btn-pw:hover { opacity: 0.85; }
+        .pw-manage .btn-pw:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn-pw-set { background: var(--sunrise-yellow); color: var(--sunrise-navy); }
+        .btn-pw-remove { background: #e9ecef; color: var(--sunrise-ruby); }
+        .pw-manage .pw-msg {
+            font-size: 12px;
+            margin-top: 8px;
+            min-height: 16px;
+        }
+        .pw-msg-ok { color: #28a745; }
+        .pw-msg-err { color: var(--sunrise-ruby); }
+
         /* ── User info in top bar ── */
         .user-info {
             display: none;
@@ -516,6 +577,18 @@
                         <option>Tanner</option>
                     </select>
                 </div>
+            </div>
+            <!-- Password management (visible for existing projects) -->
+            <div class="pw-manage" id="pwManagePanel">
+                <div class="pw-status">
+                    Project password: <span class="pw-badge" id="pwBadge">checking...</span>
+                </div>
+                <div class="pw-actions">
+                    <input type="password" id="pwManageInput" placeholder="New password">
+                    <button class="btn-pw btn-pw-set" id="pwSetBtn" onclick="setProjectPassword()">Set Password</button>
+                    <button class="btn-pw btn-pw-remove" id="pwRemoveBtn" onclick="removeProjectPassword()" style="display:none;">Remove</button>
+                </div>
+                <div class="pw-msg" id="pwMsg"></div>
             </div>
         </div>
 

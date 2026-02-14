@@ -182,6 +182,13 @@ Resources:
             RestApiId: !Ref ApiGateway
             Path: /api/clients
             Method: GET
+        # Project password management (Cognito auth required — team only)
+        ManageProjectPassword:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /api/project-password
+            Method: POST
         # Project password endpoints (no Cognito auth — called from landing pages)
         ProjectAuthCheck:
           Type: Api
@@ -229,6 +236,14 @@ Resources:
           Properties:
             RestApiId: !Ref ApiGateway
             Path: /api/clients
+            Method: OPTIONS
+            Auth:
+              Authorizer: NONE
+        CorsProjectPassword:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /api/project-password
             Method: OPTIONS
             Auth:
               Authorizer: NONE
