@@ -12,6 +12,8 @@ Provides HTTP endpoints via API Gateway for the web frontend:
 import os
 import json
 import uuid
+import hashlib
+import secrets
 import logging
 from datetime import datetime
 
@@ -34,11 +36,27 @@ def cors_response(status_code, body):
         "headers": {
             "Content-Type": "application/json",
             "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
-            "Access-Control-Allow-Headers": "Content-Type",
+            "Access-Control-Allow-Headers": "Content-Type,Authorization",
             "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
         },
         "body": json.dumps(body),
     }
+
+
+def hash_password(password, salt=None):
+    """Hash a password using PBKDF2-SHA256. Returns (hex_hash, hex_salt)."""
+    if salt is None:
+        salt = secrets.token_bytes(32)
+    else:
+        salt = bytes.fromhex(salt)
+    pw_hash = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 100_000)
+    return pw_hash.hex(), salt.hex()
+
+
+def verify_password(password, stored_hash, stored_salt):
+    """Verify a password against a stored PBKDF2 hash."""
+    computed_hash, _ = hash_password(password, salt=stored_salt)
+    return secrets.compare_digest(computed_hash, stored_hash)
 
 
 def lambda_handler(event, context):
@@ -58,6 +76,10 @@ def lambda_handler(event, context):
         return handle_job_status(event)
     elif path == "/api/clients" and http_method == "GET":
         return handle_get_clients(event)
+    elif path == "/api/project-auth" and http_method == "GET":
+        return handle_project_auth_check(event)
+    elif path == "/api/project-auth" and http_method == "POST":
+        return handle_project_auth_verify(event)
     else:
         return cors_response(404, {"error": "Not found"})
 
@@ -164,6 +186,21 @@ def handle_submit_job(event):
     if not job_prefix:
         return cors_response(400, {"error": "job_prefix is required"})
 
+    # Store project password if provided (hash it, don't put plaintext in manifest)
+    project_password = body.get("project_password", "").strip()
+    if project_password:
+        client_name_safe = body.get("client_name", "").strip().replace(" ", "_")
+        project_name_safe = body.get("project_name", "").strip().replace(" ", "_")
+        pw_hash, pw_salt = hash_password(project_password)
+        auth_key = f"state/project-auth/{client_name_safe}/{project_name_safe}.json"
+        s3.put_object(
+            Bucket=BUCKET,
+            Key=auth_key,
+            Body=json.dumps({"hash": pw_hash, "salt": pw_salt}).encode("utf-8"),
+            ContentType="application/json",
+        )
+        logger.info("Stored project password for %s/%s", client_name_safe, project_name_safe)
+
     manifest = {
         "client_name": body.get("client_name", ""),
         "project_name": body.get("project_name", ""),
@@ -238,3 +275,61 @@ def handle_get_clients(event):
         logger.error("Error reading clients registry: %s", e)
         clients = {}
     return cors_response(200, {"clients": clients})
+
+
+def handle_project_auth_check(event):
+    """
+    Check if a project is password-protected.
+
+    Query parameters: ?client=ClientName&project=ProjectName
+    Response: { "protected": true/false }
+    """
+    params = event.get("queryStringParameters") or {}
+    client = params.get("client", "").strip().replace(" ", "_")
+    project = params.get("project", "").strip().replace(" ", "_")
+    if not client or not project:
+        return cors_response(400, {"error": "client and project query parameters are required"})
+
+    auth_key = f"state/project-auth/{client}/{project}.json"
+    try:
+        s3.get_object(Bucket=BUCKET, Key=auth_key)
+        return cors_response(200, {"protected": True})
+    except s3.exceptions.NoSuchKey:
+        return cors_response(200, {"protected": False})
+    except Exception as e:
+        logger.error("Error checking project auth: %s", e)
+        return cors_response(200, {"protected": False})
+
+
+def handle_project_auth_verify(event):
+    """
+    Verify a project password.
+
+    Expects JSON body: { "client": "...", "project": "...", "password": "..." }
+    Response: { "authorized": true/false }
+    """
+    try:
+        body = json.loads(event.get("body", "{}"))
+    except (json.JSONDecodeError, TypeError):
+        return cors_response(400, {"error": "Invalid JSON body"})
+
+    client = body.get("client", "").strip().replace(" ", "_")
+    project = body.get("project", "").strip().replace(" ", "_")
+    password = body.get("password", "")
+
+    if not client or not project or not password:
+        return cors_response(400, {"error": "client, project, and password are required"})
+
+    auth_key = f"state/project-auth/{client}/{project}.json"
+    try:
+        obj = s3.get_object(Bucket=BUCKET, Key=auth_key)
+        auth_data = json.loads(obj["Body"].read().decode("utf-8"))
+        if verify_password(password, auth_data["hash"], auth_data["salt"]):
+            return cors_response(200, {"authorized": True})
+        else:
+            return cors_response(200, {"authorized": False})
+    except s3.exceptions.NoSuchKey:
+        return cors_response(200, {"authorized": False})
+    except Exception as e:
+        logger.error("Error verifying project auth: %s", e)
+        return cors_response(500, {"error": "Failed to verify password"})

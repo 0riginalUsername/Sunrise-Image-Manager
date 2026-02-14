@@ -317,9 +317,126 @@
             margin-top: 40px;
         }
 
+        /* ── Auth screen ── */
+        .auth-screen {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: calc(100vh - 64px);
+            padding: 24px;
+        }
+        .auth-card {
+            background: var(--sunrise-white);
+            border-radius: 12px;
+            padding: 40px 36px;
+            box-shadow: 0 4px 24px rgba(0,0,0,0.10);
+            max-width: 400px;
+            width: 100%;
+            text-align: center;
+        }
+        .auth-card img { height: 48px; margin-bottom: 12px; }
+        .auth-card h2 {
+            font-size: 20px;
+            color: var(--sunrise-navy);
+            margin-bottom: 24px;
+        }
+        .auth-tabs {
+            display: flex;
+            gap: 4px;
+            margin-bottom: 20px;
+            background: #e9ecef;
+            border-radius: 8px;
+            padding: 3px;
+        }
+        .auth-tab {
+            flex: 1;
+            padding: 10px;
+            border: none;
+            background: transparent;
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--sunrise-navy);
+            cursor: pointer;
+            border-radius: 6px;
+            transition: background 0.2s;
+        }
+        .auth-tab.active {
+            background: var(--sunrise-white);
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        .auth-form input {
+            width: 100%;
+            padding: 12px 14px;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            font-size: 14px;
+            font-family: inherit;
+            margin-bottom: 12px;
+            transition: border-color 0.2s;
+        }
+        .auth-form input:focus {
+            border-color: var(--sunrise-navy);
+            outline: none;
+            box-shadow: 0 0 0 2px rgba(17,62,89,0.12);
+        }
+        .auth-form button {
+            width: 100%;
+            padding: 12px;
+            background: var(--sunrise-yellow);
+            color: var(--sunrise-navy);
+            border: none;
+            border-radius: 8px;
+            font-size: 15px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+        .auth-form button:hover { opacity: 0.85; }
+        .auth-form button:disabled { opacity: 0.5; cursor: not-allowed; }
+        .auth-error {
+            color: var(--sunrise-ruby);
+            font-size: 13px;
+            margin-top: 10px;
+            min-height: 18px;
+        }
+        .auth-info {
+            color: #28a745;
+            font-size: 13px;
+            margin-top: 10px;
+            min-height: 18px;
+        }
+        .auth-form p {
+            font-size: 13px;
+            color: #666;
+            margin-bottom: 14px;
+        }
+
+        /* ── User info in top bar ── */
+        .user-info {
+            display: none;
+            align-items: center;
+            gap: 12px;
+        }
+        .user-info span {
+            color: var(--sunrise-white);
+            font-size: 13px;
+        }
+        .btn-signout {
+            padding: 6px 14px;
+            background: rgba(255,255,255,0.15);
+            color: var(--sunrise-white);
+            border: 1px solid rgba(255,255,255,0.3);
+            border-radius: 4px;
+            font-size: 12px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .btn-signout:hover { background: rgba(255,255,255,0.25); }
+
         /* ── Responsive ── */
         @media (max-width: 768px) {
             .form-row { flex-direction: column; }
+            .auth-card { padding: 28px 20px; }
         }
     </style>
 </head>
@@ -329,9 +446,48 @@
     <div class="app-top-bar">
         <img alt="Sunrise logo" src="https://sunrise-eng.com/wp-content/themes/sunrise-eng-2018/assets/img/logo-sunrise-white.svg" />
         <h1>Pano + Photo Image Manager</h1>
+        <div class="user-info" id="userInfo">
+            <span id="userEmail"></span>
+            <button class="btn-signout" onclick="signOut()">Sign Out</button>
+        </div>
     </div>
 
-    <div class="app-container">
+    <!-- Auth Screen (shown when not logged in) -->
+    <div class="auth-screen" id="authScreen">
+        <div class="auth-card">
+            <img alt="Sunrise Engineering" src="https://sunrise-eng.com/wp-content/themes/sunrise-eng-2018/assets/img/logo-sunrise-white.svg" style="background:var(--sunrise-navy);padding:8px 16px;border-radius:6px;" />
+            <h2>Sign in to continue</h2>
+            <div class="auth-tabs">
+                <button class="auth-tab active" id="tabSignin" onclick="showAuthTab('signin')">Sign In</button>
+                <button class="auth-tab" id="tabSignup" onclick="showAuthTab('signup')">Create Account</button>
+            </div>
+            <!-- Sign In -->
+            <div class="auth-form" id="signinForm">
+                <input type="email" id="signinEmail" placeholder="Email address" onkeydown="if(event.key==='Enter')signIn()">
+                <input type="password" id="signinPassword" placeholder="Password" onkeydown="if(event.key==='Enter')signIn()">
+                <button onclick="signIn()" id="signinBtn">Sign In</button>
+                <div class="auth-error" id="signinError"></div>
+            </div>
+            <!-- Sign Up -->
+            <div class="auth-form" id="signupForm" style="display:none;">
+                <input type="email" id="signupEmail" placeholder="Email address">
+                <input type="password" id="signupPassword" placeholder="Password (8+ characters)">
+                <input type="password" id="signupConfirm" placeholder="Confirm password" onkeydown="if(event.key==='Enter')signUp()">
+                <button onclick="signUp()" id="signupBtn">Create Account</button>
+                <div class="auth-error" id="signupError"></div>
+            </div>
+            <!-- Confirm Code -->
+            <div class="auth-form" id="confirmForm" style="display:none;">
+                <p>A verification code has been sent to your email.</p>
+                <input type="text" id="confirmCode" placeholder="Verification code" onkeydown="if(event.key==='Enter')confirmSignUp()">
+                <button onclick="confirmSignUp()" id="confirmBtn">Verify Email</button>
+                <div class="auth-error" id="confirmError"></div>
+                <div class="auth-info" id="confirmInfo"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="app-container" id="appContent" style="display:none;">
 
         <!-- Project Info Form -->
         <div class="form-section">
@@ -394,6 +550,11 @@
                     <input type="file" id="csvUpload" accept=".csv">
                     <small>Format: name, northing, easting, elevation &mdash; for indoor photos without GPS</small>
                 </div>
+                <div class="form-group">
+                    <label for="projectPassword">Project Password (optional)</label>
+                    <input type="password" id="projectPassword" placeholder="Leave blank for no password">
+                    <small>If set, clients must enter this password to view the project landing page</small>
+                </div>
             </div>
         </div>
 
@@ -425,8 +586,10 @@
         Sunrise Engineering &copy; 2025 &mdash; Panoramic Image Management System
     </div>
 
-    <!-- config.js is auto-generated by deploy.sh with the API URL -->
+    <!-- config.js is auto-generated by deploy.sh with the API URL + Cognito config -->
     <script src="config.js"></script>
+    <!-- Cognito auth SDK -->
+    <script src="https://unpkg.com/amazon-cognito-identity-js@6/dist/amazon-cognito-identity.min.js"></script>
     <script src="app.js"></script>
 </body>
 </html>

@@ -61,6 +61,39 @@ Conditions:
 
 Resources:
 
+  # ── Cognito User Pool (email/password authentication for upload page) ──
+  CognitoUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub "${AWS::StackName}-users"
+      UsernameAttributes:
+        - email
+      AutoVerifiedAttributes:
+        - email
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireUppercase: false
+          RequireSymbols: false
+      Schema:
+        - Name: email
+          AttributeDataType: String
+          Mutable: true
+          Required: true
+
+  CognitoUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: !Sub "${AWS::StackName}-web"
+      UserPoolId: !Ref CognitoUserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      PreventUserExistenceErrors: ENABLED
+
   # ── S3 Bucket (uploads, processed output, static frontend) ──
   ImageBucket:
     Type: AWS::S3::Bucket
@@ -99,8 +132,13 @@ Resources:
       StageName: prod
       Cors:
         AllowMethods: "'GET,POST,OPTIONS'"
-        AllowHeaders: "'Content-Type'"
+        AllowHeaders: "'Content-Type,Authorization'"
         AllowOrigin: !Sub "'${AllowedOrigin}'"
+      Auth:
+        DefaultAuthorizer: CognitoAuth
+        Authorizers:
+          CognitoAuth:
+            UserPoolArn: !GetAtt CognitoUserPool.Arn
 
   # ── API Lambda (job management: create-job, submit-job, job-status) ──
   ApiFunction:
@@ -138,36 +176,70 @@ Resources:
             RestApiId: !Ref ApiGateway
             Path: /api/job-status
             Method: GET
-        CorsCreateJob:
-          Type: Api
-          Properties:
-            RestApiId: !Ref ApiGateway
-            Path: /api/create-job
-            Method: OPTIONS
-        CorsSubmitJob:
-          Type: Api
-          Properties:
-            RestApiId: !Ref ApiGateway
-            Path: /api/submit-job
-            Method: OPTIONS
-        CorsJobStatus:
-          Type: Api
-          Properties:
-            RestApiId: !Ref ApiGateway
-            Path: /api/job-status
-            Method: OPTIONS
         GetClients:
           Type: Api
           Properties:
             RestApiId: !Ref ApiGateway
             Path: /api/clients
             Method: GET
+        # Project password endpoints (no Cognito auth — called from landing pages)
+        ProjectAuthCheck:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /api/project-auth
+            Method: GET
+            Auth:
+              Authorizer: NONE
+        ProjectAuthVerify:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /api/project-auth
+            Method: POST
+            Auth:
+              Authorizer: NONE
+        # CORS preflight (no auth required)
+        CorsCreateJob:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /api/create-job
+            Method: OPTIONS
+            Auth:
+              Authorizer: NONE
+        CorsSubmitJob:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /api/submit-job
+            Method: OPTIONS
+            Auth:
+              Authorizer: NONE
+        CorsJobStatus:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /api/job-status
+            Method: OPTIONS
+            Auth:
+              Authorizer: NONE
         CorsClients:
           Type: Api
           Properties:
             RestApiId: !Ref ApiGateway
             Path: /api/clients
             Method: OPTIONS
+            Auth:
+              Authorizer: NONE
+        CorsProjectAuth:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /api/project-auth
+            Method: OPTIONS
+            Auth:
+              Authorizer: NONE
 
   # ── Processing Lambda (image compression, HTML gen, CSV, DXF, email) ──
   ProcessingFunction:
@@ -232,3 +304,9 @@ Outputs:
   ApiFunctionArn:
     Value: !GetAtt ApiFunction.Arn
     Description: API Lambda ARN
+  CognitoUserPoolId:
+    Value: !Ref CognitoUserPool
+    Description: Cognito User Pool ID
+  CognitoClientId:
+    Value: !Ref CognitoUserPoolClient
+    Description: Cognito User Pool Client ID

@@ -218,6 +218,73 @@
             font-weight: 600;
         }
 
+        /* ── Password gate ── */
+        .password-gate {
+            display: none;
+            justify-content: center;
+            align-items: center;
+            min-height: calc(100vh - 200px);
+            padding: 24px;
+        }
+        .password-gate.visible { display: flex; }
+        .password-card {
+            background: var(--white);
+            border-radius: 12px;
+            padding: 40px 36px;
+            box-shadow: 0 4px 24px rgba(0,0,0,0.10);
+            max-width: 400px;
+            width: 100%;
+            text-align: center;
+        }
+        .password-card h2 {
+            font-size: 18px;
+            color: var(--navy);
+            margin-bottom: 8px;
+        }
+        .password-card p {
+            font-size: 13px;
+            color: var(--gray);
+            margin-bottom: 20px;
+        }
+        .password-card input {
+            width: 100%;
+            padding: 12px 14px;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            font-size: 14px;
+            font-family: inherit;
+            margin-bottom: 12px;
+        }
+        .password-card input:focus {
+            border-color: var(--navy);
+            outline: none;
+            box-shadow: 0 0 0 2px rgba(17,62,89,0.12);
+        }
+        .password-card button {
+            width: 100%;
+            padding: 12px;
+            background: var(--yellow);
+            color: var(--navy);
+            border: none;
+            border-radius: 8px;
+            font-size: 15px;
+            font-weight: 700;
+            cursor: pointer;
+        }
+        .password-card button:hover { opacity: 0.85; }
+        .password-card button:disabled { opacity: 0.5; cursor: not-allowed; }
+        .password-error {
+            color: #d2342e;
+            font-size: 13px;
+            margin-top: 10px;
+            min-height: 18px;
+        }
+        .password-card .lock-icon {
+            font-size: 36px;
+            margin-bottom: 12px;
+            opacity: 0.6;
+        }
+
         /* ── Loading ── */
         .loading {
             text-align: center;
@@ -283,6 +350,18 @@
     <div id="map"></div>
 </div>
 
+<!-- Password Gate (for protected projects) -->
+<div class="password-gate" id="passwordGate">
+    <div class="password-card">
+        <div class="lock-icon">&#x1F512;</div>
+        <h2>This project is password protected</h2>
+        <p>Enter the project password to view images and data.</p>
+        <input type="password" id="projectPassword" placeholder="Project password" onkeydown="if(event.key==='Enter')verifyProjectPassword()">
+        <button onclick="verifyProjectPassword()" id="verifyBtn">View Project</button>
+        <div class="password-error" id="passwordError"></div>
+    </div>
+</div>
+
 <!-- Loading -->
 <div class="loading" id="loading">
     <div class="spinner"></div>
@@ -328,29 +407,114 @@ let allImages = [];
 let filteredImages = [];
 let currentIdx = -1;
 let map = null;
+let apiBase = null;
+
+/* ── Load API config (for password verification) ── */
+async function loadApiConfig() {
+    try {
+        var resp = await fetch('/frontend/config.js');
+        if (resp.ok) {
+            var text = await resp.text();
+            var match = text.match(/apiBase:\s*'([^']+)'/);
+            if (match) apiBase = match[1];
+        }
+    } catch (e) {
+        console.warn('Could not load API config:', e);
+    }
+}
 
 /* ── Init ── */
 async function init() {
     try {
-        const resp = await fetch('index.json');
+        var resp = await fetch('index.json');
         if (!resp.ok) throw new Error('Failed to load');
         projectData = await resp.json();
 
-        projectData.batches.forEach(batch => {
-            batch.images.forEach(img => allImages.push(Object.assign({}, img, { batch: batch })));
-        });
-
-        document.getElementById('loading').style.display = 'none';
         renderHeader();
-        renderStats();
-        renderMap();
-        renderGallery('all');
-        document.getElementById('galleryContainer').style.display = 'block';
-        document.getElementById('statsBar').classList.add('visible');
+
+        // Check if project is password-protected
+        if (projectData.protected) {
+            var storageKey = 'pw_' + projectData.client_name + '_' + projectData.project_name;
+            if (sessionStorage.getItem(storageKey) === 'verified') {
+                loadContent();
+            } else {
+                await loadApiConfig();
+                document.getElementById('loading').style.display = 'none';
+                document.getElementById('mapSection').style.display = 'none';
+                document.getElementById('passwordGate').classList.add('visible');
+            }
+        } else {
+            loadContent();
+        }
     } catch (err) {
         document.getElementById('loading').innerHTML = '<p>Could not load project data.</p>';
         console.error(err);
     }
+}
+
+/* ── Password verification ── */
+async function verifyProjectPassword() {
+    var password = document.getElementById('projectPassword').value;
+    var errorEl = document.getElementById('passwordError');
+    errorEl.textContent = '';
+
+    if (!password) {
+        errorEl.textContent = 'Please enter the project password.';
+        return;
+    }
+
+    if (!apiBase) {
+        errorEl.textContent = 'Unable to verify password. API not configured.';
+        return;
+    }
+
+    document.getElementById('verifyBtn').disabled = true;
+
+    try {
+        var resp = await fetch(apiBase + '/project-auth', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                client: projectData.client_name,
+                project: projectData.project_name,
+                password: password
+            })
+        });
+
+        if (!resp.ok) throw new Error('Verification request failed');
+
+        var data = await resp.json();
+        if (data.authorized) {
+            var storageKey = 'pw_' + projectData.client_name + '_' + projectData.project_name;
+            sessionStorage.setItem(storageKey, 'verified');
+            document.getElementById('passwordGate').classList.remove('visible');
+            document.getElementById('mapSection').style.display = '';
+            loadContent();
+        } else {
+            errorEl.textContent = 'Incorrect password. Please try again.';
+        }
+    } catch (err) {
+        errorEl.textContent = 'Verification failed. Please try again.';
+        console.error(err);
+    } finally {
+        document.getElementById('verifyBtn').disabled = false;
+    }
+}
+
+/* ── Load project content (after auth check passes) ── */
+function loadContent() {
+    projectData.batches.forEach(function(batch) {
+        batch.images.forEach(function(img) {
+            allImages.push(Object.assign({}, img, { batch: batch }));
+        });
+    });
+
+    document.getElementById('loading').style.display = 'none';
+    renderStats();
+    renderMap();
+    renderGallery('all');
+    document.getElementById('galleryContainer').style.display = 'block';
+    document.getElementById('statsBar').classList.add('visible');
 }
 
 /* ── Header ── */

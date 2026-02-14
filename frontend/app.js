@@ -2,17 +2,208 @@
  * Sunrise Image Manager - Web Frontend
  *
  * Handles:
- *  1. Drag-and-drop / file picker for JPG images (any mix of pano + photo)
- *  2. Auto-classifies images as panoramic (aspect ratio >= 1.9) or standard
- *  3. Requests presigned S3 upload URLs from the API
- *  4. Uploads files directly to S3 from the browser
- *  5. Submits a job manifest to trigger Lambda processing
- *  6. Polls for job completion status
+ *  1. Cognito authentication (sign-up, sign-in, session management)
+ *  2. Drag-and-drop / file picker for JPG images (any mix of pano + photo)
+ *  3. Auto-classifies images as panoramic (aspect ratio >= 1.9) or standard
+ *  4. Requests presigned S3 upload URLs from the API
+ *  5. Uploads files directly to S3 from the browser
+ *  6. Submits a job manifest to trigger Lambda processing
+ *  7. Polls for job completion status
  */
 
 // ── Configuration ──────────────────────────────────────────────────────────
 const API_BASE = window.SIM_CONFIG?.apiBase || '/api';
-const PANO_ASPECT_RATIO = 1.9;  // width/height >= this ⇒ panoramic
+const PANO_ASPECT_RATIO = 1.9;  // width/height >= this => panoramic
+
+// ── Cognito setup ──────────────────────────────────────────────────────────
+const userPool = (window.AmazonCognitoIdentity && window.SIM_CONFIG?.cognitoUserPoolId)
+    ? new AmazonCognitoIdentity.CognitoUserPool({
+        UserPoolId: window.SIM_CONFIG.cognitoUserPoolId,
+        ClientId: window.SIM_CONFIG.cognitoClientId,
+    })
+    : null;
+
+let currentSession = null;
+let pendingConfirmEmail = null;  // email awaiting verification code
+
+// ── Auth functions ─────────────────────────────────────────────────────────
+function checkAuth() {
+    if (!userPool) {
+        // Cognito not configured — show app without auth (dev/local mode)
+        showApp('(no auth)');
+        return;
+    }
+    const user = userPool.getCurrentUser();
+    if (user) {
+        user.getSession(function(err, session) {
+            if (!err && session && session.isValid()) {
+                currentSession = session;
+                showApp(user.getUsername());
+            } else {
+                showAuth();
+            }
+        });
+    } else {
+        showAuth();
+    }
+}
+
+function getAuthToken() {
+    if (!currentSession) return null;
+    return currentSession.getIdToken().getJwtToken();
+}
+
+function authHeaders() {
+    const headers = { 'Content-Type': 'application/json' };
+    const token = getAuthToken();
+    if (token) headers['Authorization'] = token;
+    return headers;
+}
+
+function showApp(email) {
+    document.getElementById('authScreen').style.display = 'none';
+    document.getElementById('appContent').style.display = 'block';
+    document.getElementById('userInfo').style.display = 'flex';
+    document.getElementById('userEmail').textContent = email;
+    loadClientRegistry();
+}
+
+function showAuth() {
+    document.getElementById('authScreen').style.display = 'flex';
+    document.getElementById('appContent').style.display = 'none';
+    document.getElementById('userInfo').style.display = 'none';
+}
+
+function showAuthTab(tab) {
+    document.getElementById('signinForm').style.display = tab === 'signin' ? 'block' : 'none';
+    document.getElementById('signupForm').style.display = tab === 'signup' ? 'block' : 'none';
+    document.getElementById('confirmForm').style.display = tab === 'confirm' ? 'block' : 'none';
+    document.getElementById('tabSignin').classList.toggle('active', tab === 'signin');
+    document.getElementById('tabSignup').classList.toggle('active', tab === 'signup' || tab === 'confirm');
+    // Clear errors
+    document.getElementById('signinError').textContent = '';
+    document.getElementById('signupError').textContent = '';
+    document.getElementById('confirmError').textContent = '';
+}
+
+function signIn() {
+    const email = document.getElementById('signinEmail').value.trim();
+    const password = document.getElementById('signinPassword').value;
+    const errorEl = document.getElementById('signinError');
+    errorEl.textContent = '';
+
+    if (!email || !password) {
+        errorEl.textContent = 'Please enter email and password.';
+        return;
+    }
+
+    document.getElementById('signinBtn').disabled = true;
+
+    const authDetails = new AmazonCognitoIdentity.AuthenticationDetails({
+        Username: email,
+        Password: password,
+    });
+    const cognitoUser = new AmazonCognitoIdentity.CognitoUser({
+        Username: email,
+        Pool: userPool,
+    });
+
+    cognitoUser.authenticateUser(authDetails, {
+        onSuccess: function(session) {
+            currentSession = session;
+            document.getElementById('signinBtn').disabled = false;
+            showApp(email);
+        },
+        onFailure: function(err) {
+            document.getElementById('signinBtn').disabled = false;
+            if (err.code === 'UserNotConfirmedException') {
+                pendingConfirmEmail = email;
+                showAuthTab('confirm');
+                return;
+            }
+            errorEl.textContent = err.message || 'Sign in failed.';
+        },
+    });
+}
+
+function signUp() {
+    const email = document.getElementById('signupEmail').value.trim();
+    const password = document.getElementById('signupPassword').value;
+    const confirm = document.getElementById('signupConfirm').value;
+    const errorEl = document.getElementById('signupError');
+    errorEl.textContent = '';
+
+    if (!email || !password) {
+        errorEl.textContent = 'Please enter email and password.';
+        return;
+    }
+    if (password !== confirm) {
+        errorEl.textContent = 'Passwords do not match.';
+        return;
+    }
+    if (password.length < 8) {
+        errorEl.textContent = 'Password must be at least 8 characters.';
+        return;
+    }
+
+    document.getElementById('signupBtn').disabled = true;
+
+    const attrs = [
+        new AmazonCognitoIdentity.CognitoUserAttribute({ Name: 'email', Value: email }),
+    ];
+
+    userPool.signUp(email, password, attrs, null, function(err, result) {
+        document.getElementById('signupBtn').disabled = false;
+        if (err) {
+            errorEl.textContent = err.message || 'Sign up failed.';
+            return;
+        }
+        pendingConfirmEmail = email;
+        showAuthTab('confirm');
+    });
+}
+
+function confirmSignUp() {
+    const code = document.getElementById('confirmCode').value.trim();
+    const errorEl = document.getElementById('confirmError');
+    const infoEl = document.getElementById('confirmInfo');
+    errorEl.textContent = '';
+    infoEl.textContent = '';
+
+    if (!code) {
+        errorEl.textContent = 'Please enter the verification code.';
+        return;
+    }
+
+    document.getElementById('confirmBtn').disabled = true;
+
+    const cognitoUser = new AmazonCognitoIdentity.CognitoUser({
+        Username: pendingConfirmEmail,
+        Pool: userPool,
+    });
+
+    cognitoUser.confirmRegistration(code, true, function(err, result) {
+        document.getElementById('confirmBtn').disabled = false;
+        if (err) {
+            errorEl.textContent = err.message || 'Verification failed.';
+            return;
+        }
+        infoEl.textContent = 'Email verified! You can now sign in.';
+        setTimeout(function() { showAuthTab('signin'); }, 1500);
+    });
+}
+
+function signOut() {
+    if (userPool) {
+        const user = userPool.getCurrentUser();
+        if (user) user.signOut();
+    }
+    currentSession = null;
+    showAuth();
+}
+
+// Start auth check on page load
+checkAuth();
 
 // ── State ──────────────────────────────────────────────────────────────────
 // Each entry: { file: File, type: 'pano'|'photo'|'classifying' }
@@ -40,7 +231,7 @@ const projectDatalist    = document.getElementById('projectList');
 // ── Client/project registry ─────────────────────────────────────────────
 async function loadClientRegistry() {
     try {
-        const resp = await fetch(`${API_BASE}/clients`);
+        const resp = await fetch(`${API_BASE}/clients`, { headers: authHeaders() });
         if (resp.ok) {
             const data = await resp.json();
             clientRegistry = data.clients || {};
@@ -74,9 +265,6 @@ function populateProjectList(clientName) {
 clientInput.addEventListener('input', () => {
     populateProjectList(clientInput.value.trim());
 });
-
-// Load registry on page load
-loadClientRegistry();
 
 // ── Batch options ────────────────────────────────────────────────────────
 const qualitySlider = document.getElementById('jpegQuality');
@@ -233,6 +421,7 @@ async function startProcessing() {
     // Read batch options
     const keepFilenames = document.getElementById('keepFilenames').checked;
     const jpegQuality = parseInt(document.getElementById('jpegQuality').value, 10);
+    const projectPassword = document.getElementById('projectPassword').value;
     let positionCsv = '';
     const csvFile = document.getElementById('csvUpload').files[0];
     if (csvFile) {
@@ -250,7 +439,7 @@ async function startProcessing() {
         // Step 1: Create job and get presigned URLs
         const createResp = await fetch(`${API_BASE}/create-job`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: authHeaders(),
             body: JSON.stringify({
                 client_name: clientName,
                 project_name: projectName,
@@ -300,22 +489,27 @@ async function startProcessing() {
 
         setProgress(78, 'Submitting job for processing...', false);
 
-        // Step 3: Submit job manifest
+        // Step 3: Submit job manifest (include project password if set)
+        const submitBody = {
+            job_prefix: jobData.job_prefix,
+            client_name: jobData.client_name,
+            project_name: jobData.project_name,
+            employee_name: jobData.employee_name,
+            file_dt: jobData.file_dt,
+            pano_keys: jobData.pano_uploads.map(u => u.key),
+            photo_keys: jobData.photo_uploads.map(u => u.key),
+            keep_filenames: keepFilenames,
+            jpeg_quality: jpegQuality,
+            position_csv: positionCsv,
+        };
+        if (projectPassword) {
+            submitBody.project_password = projectPassword;
+        }
+
         const submitResp = await fetch(`${API_BASE}/submit-job`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                job_prefix: jobData.job_prefix,
-                client_name: jobData.client_name,
-                project_name: jobData.project_name,
-                employee_name: jobData.employee_name,
-                file_dt: jobData.file_dt,
-                pano_keys: jobData.pano_uploads.map(u => u.key),
-                photo_keys: jobData.photo_uploads.map(u => u.key),
-                keep_filenames: keepFilenames,
-                jpeg_quality: jpegQuality,
-                position_csv: positionCsv,
-            }),
+            headers: authHeaders(),
+            body: JSON.stringify(submitBody),
         });
 
         if (!submitResp.ok) {
@@ -384,7 +578,8 @@ async function pollJobStatus(jobPrefix) {
 
         try {
             const resp = await fetch(
-                `${API_BASE}/job-status?job_prefix=${encodeURIComponent(jobPrefix)}`
+                `${API_BASE}/job-status?job_prefix=${encodeURIComponent(jobPrefix)}`,
+                { headers: authHeaders() }
             );
             if (!resp.ok) continue;
 

@@ -509,6 +509,14 @@ def update_project_index(bucket, client_name, project_name, file_dt, employee_na
     except Exception:
         index_data = {"client_name": client_name, "project_name": project_name, "batches": []}
 
+    # Check if this project is password-protected
+    auth_key = f"state/project-auth/{client_name}/{project_name}.json"
+    try:
+        s3.head_object(Bucket=bucket, Key=auth_key)
+        index_data["protected"] = True
+    except Exception:
+        index_data.pop("protected", None)
+
     # Build image entries (paths relative to project_prefix)
     images = []
     for meta in pano_meta:
