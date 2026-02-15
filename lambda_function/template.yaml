@@ -106,6 +106,8 @@ Resources:
   # ── S3 Bucket (uploads, processed output, static frontend) ──
   ImageBucket:
     Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       BucketName: !Ref S3BucketName
       # No WebsiteConfiguration — content is served via CloudFront
