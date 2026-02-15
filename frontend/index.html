@@ -576,7 +576,7 @@
                     Project password: <span class="pw-badge" id="pwBadge">checking...</span>
                 </div>
                 <div class="pw-actions">
-                    <input type="password" id="pwManageInput" placeholder="New password">
+                    <input type="password" id="pwManageInput" placeholder="New password" autocomplete="new-password">
                     <button class="btn-pw btn-pw-set" id="pwSetBtn" onclick="setProjectPassword()">Set Password</button>
                     <button class="btn-pw btn-pw-remove" id="pwRemoveBtn" onclick="removeProjectPassword()" style="display:none;">Remove</button>
                 </div>
@@ -617,7 +617,7 @@
                 </div>
                 <div class="form-group">
                     <label for="projectPassword">Project Password (optional)</label>
-                    <input type="password" id="projectPassword" placeholder="Leave blank for no password">
+                    <input type="password" id="projectPassword" placeholder="Leave blank for no password" autocomplete="new-password">
                     <small>If set, clients must enter this password to view the project landing page</small>
                 </div>
             </div>
