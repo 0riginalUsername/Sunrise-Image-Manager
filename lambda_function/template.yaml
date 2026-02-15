@@ -28,7 +28,7 @@ Parameters:
     Default: https://pano.seihds.com
   DomainPrefix:
     Type: String
-    Default: ""
+    Default: "/processed"
   MaxWidth:
     Type: Number
     Default: 8192
