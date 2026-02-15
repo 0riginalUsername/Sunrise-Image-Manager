@@ -19,6 +19,12 @@ REGION="${AWS_DEFAULT_REGION:-us-east-1}"
 ZIP_FILE="$SCRIPT_DIR/geo-layer.zip"
 PUBLISH=false
 
+# Git Bash / MSYS on Windows: convert /c/Users/... to C:/Users/... for Docker & AWS CLI
+DOCKER_SCRIPT_DIR="$SCRIPT_DIR"
+if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "mingw"* || "$OSTYPE" == "cygwin" ]]; then
+    DOCKER_SCRIPT_DIR="$(cygpath -w "$SCRIPT_DIR" 2>/dev/null || echo "$SCRIPT_DIR" | sed 's|^/\([a-zA-Z]\)/|\1:/|')"
+fi
+
 while [[ $# -gt 0 ]]; do
     case $1 in
         --publish) PUBLISH=true; shift ;;
@@ -34,9 +40,10 @@ rm -rf "$SCRIPT_DIR/build" "$ZIP_FILE"
 mkdir -p "$SCRIPT_DIR/build/python"
 
 # Build inside a Lambda-compatible container
+export MSYS_NO_PATHCONV=1  # Prevent Git Bash from mangling paths in -v args
 docker run --rm \
-    -v "$SCRIPT_DIR/build/python:/out" \
-    -v "$SCRIPT_DIR:/layer" \
+    -v "$DOCKER_SCRIPT_DIR/build/python:/out" \
+    -v "$DOCKER_SCRIPT_DIR:/layer" \
     public.ecr.aws/sam/build-python3.11:latest \
     bash -c "
         pip install \
@@ -72,16 +79,26 @@ with zipfile.ZipFile(sys.argv[1], 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as
 " "$ZIP_FILE"
 fi
 
+if [ ! -f "$ZIP_FILE" ]; then
+    echo "ERROR: $ZIP_FILE was not created. Docker build may have failed."
+    exit 1
+fi
+
 LAYER_SIZE=$(du -sh "$ZIP_FILE" | cut -f1)
 echo ">> Layer ZIP: $ZIP_FILE ($LAYER_SIZE)"
 
 if [ "$PUBLISH" = true ]; then
     echo ">> Publishing layer to AWS..."
+    # Use Windows-style path for fileb:// on Git Bash
+    FILEB_PATH="$ZIP_FILE"
+    if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "mingw"* || "$OSTYPE" == "cygwin" ]]; then
+        FILEB_PATH="$(cygpath -w "$ZIP_FILE" 2>/dev/null || echo "$ZIP_FILE" | sed 's|^/\([a-zA-Z]\)/|\1:/|')"
+    fi
     LAYER_ARN=$(aws lambda publish-layer-version \
         --layer-name "$LAYER_NAME" \
         --description "pyproj, geopandas, shapely, fiona, ezdxf for Sunrise Image Manager" \
         --compatible-runtimes python3.11 \
-        --zip-file "fileb://$ZIP_FILE" \
+        --zip-file "fileb://$FILEB_PATH" \
         --region "$REGION" \
         --query 'LayerVersionArn' \
         --output text)
