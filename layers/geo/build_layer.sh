@@ -58,11 +58,17 @@ docker run --rm \
             --no-cache-dir \
             --prefer-binary
         # Remove unnecessary files to shrink the layer
+        echo '>> Cleaning up layer to reduce size...'
         find /out -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true
         find /out -type d -name 'tests' -exec rm -rf {} + 2>/dev/null || true
         find /out -type d -name 'test' -exec rm -rf {} + 2>/dev/null || true
         find /out -name '*.pyc' -delete 2>/dev/null || true
         find /out -name '*.pyi' -delete 2>/dev/null || true
+        find /out -name '*.dist-info' -type d -exec rm -rf {} + 2>/dev/null || true
+        # Strip debug symbols from native .so files
+        find /out -name '*.so' -exec strip --strip-debug {} + 2>/dev/null || true
+        find /out -name '*.so.*' -exec strip --strip-debug {} + 2>/dev/null || true
+        echo \">> Layer contents: \$(du -sh /out | cut -f1)\"
     "
 
 # Zip it up
@@ -76,16 +82,21 @@ if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "mingw"* || "$OSTYPE" == "cygwin" ]]; 
 fi
 
 if command -v zip &>/dev/null; then
-    zip -r9 "$ZIP_FILE_NATIVE" python/
+    zip -r1 "$ZIP_FILE_NATIVE" python/
 else
-    echo "   (zip not found — using Python zipfile)"
+    echo "   (zip not found — using Python zipfile, this may take a minute...)"
     python3 -c "
 import zipfile, os, sys
-with zipfile.ZipFile(sys.argv[1], 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
+count = 0
+with zipfile.ZipFile(sys.argv[1], 'w', zipfile.ZIP_DEFLATED, compresslevel=1) as zf:
     for root, dirs, files in os.walk('python'):
         for f in files:
             fp = os.path.join(root, f)
             zf.write(fp)
+            count += 1
+            if count % 500 == 0:
+                print(f'   {count} files zipped...', flush=True)
+print(f'   Done: {count} files zipped.', flush=True)
 " "$ZIP_FILE_NATIVE"
 fi
 
