@@ -36,8 +36,8 @@ from jinja2 import Environment, BaseLoader
 try:
     import ezdxf
     from ezdxf.addons import Importer
-    import geopandas as gpd
-    from shapely.geometry import Point
+    import shapefile  # pyshp — lightweight shapefile reader
+    from shapely.geometry import Point, shape
     from pyproj import Transformer
     HAS_GEO = True
 except ImportError:
@@ -351,17 +351,19 @@ def meters_to_feet(meters):
 def latlon_to_state_plane(lat, lon, alt=None):
     """Convert WGS84 lat/lon to State Plane coordinates using the NAD83 shapefile."""
     shp_path = _download_shapefile()
-    zones = gpd.read_file(shp_path)
     pt = Point(lon, lat)
-    match = zones[zones.contains(pt)]
-    if match.empty:
-        raise ValueError("No State Plane zone found for this location")
-    zone = match.iloc[0]
-    epsg = int(zone["EPSG"])
-    transformer = Transformer.from_crs("EPSG:4326", f"EPSG:{epsg}", always_xy=True)
-    z = meters_to_feet(alt) if alt is not None else 0
-    x, y = transformer.transform(lon, lat)
-    return zone["ZONENAME"], epsg, x, y, z
+    reader = shapefile.Reader(shp_path)
+    fields = [f[0] for f in reader.fields[1:]]  # skip DeletionFlag
+    for sr in reader.iterShapeRecords():
+        geom = shape(sr.shape.__geo_interface__)
+        if geom.contains(pt):
+            rec = dict(zip(fields, sr.record))
+            epsg = int(rec["EPSG"])
+            transformer = Transformer.from_crs("EPSG:4326", f"EPSG:{epsg}", always_xy=True)
+            z = meters_to_feet(alt) if alt is not None else 0
+            x, y = transformer.transform(lon, lat)
+            return rec["ZONENAME"], epsg, x, y, z
+    raise ValueError("No State Plane zone found for this location")
 
 
 # ---------------------------------------------------------------------------

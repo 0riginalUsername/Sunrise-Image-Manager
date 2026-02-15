@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # ──────────────────────────────────────────────────────────────────────────
-# Build the "geo" Lambda Layer containing pyproj, geopandas, shapely,
-# fiona, and ezdxf — all the dependencies the Processing Lambda needs
-# for DXF export and State Plane coordinate projection.
+# Build the "geo" Lambda Layer containing pyproj, shapely, pyshp, and
+# ezdxf — the dependencies the Processing Lambda needs for DXF export
+# and State Plane coordinate projection.
 #
 # The layer is built inside a Docker container that matches the Lambda
-# runtime so that native extensions (GEOS, PROJ, GDAL) are compatible.
+# runtime so that native extensions (GEOS, PROJ) are compatible.
 #
 # Usage:
 #   ./build_layer.sh                    # builds layers/geo/geo-layer.zip
@@ -50,9 +50,8 @@ docker run --rm \
         pip install --upgrade pip
         pip install \
             pyproj \
-            geopandas \
             shapely \
-            fiona \
+            pyshp \
             ezdxf \
             -t /out \
             --no-cache-dir \
@@ -116,14 +115,31 @@ if [ "$PUBLISH" = true ]; then
     if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "mingw"* || "$OSTYPE" == "cygwin" ]]; then
         FILEB_PATH="$(cygpath -w "$ZIP_FILE" 2>/dev/null || echo "$ZIP_FILE" | sed 's|^/\([a-zA-Z]\)/|\1:/|')"
     fi
-    LAYER_ARN=$(aws lambda publish-layer-version \
-        --layer-name "$LAYER_NAME" \
-        --description "pyproj, geopandas, shapely, fiona, ezdxf for Sunrise Image Manager" \
-        --compatible-runtimes python3.11 \
-        --zip-file "fileb://$FILEB_PATH" \
-        --region "$REGION" \
-        --query 'LayerVersionArn' \
-        --output text)
+
+    # Direct upload works for zips <50 MB; larger zips go via S3
+    ZIP_BYTES=$(wc -c < "$FILEB_PATH" 2>/dev/null || wc -c < "$ZIP_FILE")
+    if [ "$ZIP_BYTES" -gt 50000000 ]; then
+        echo "   ZIP is ${LAYER_SIZE} (>50 MB) — uploading via S3..."
+        S3_KEY="layers/${LAYER_NAME}.zip"
+        aws s3 cp "$FILEB_PATH" "s3://${BUCKET:-$LAYER_NAME}/$S3_KEY" --region "$REGION"
+        LAYER_ARN=$(aws lambda publish-layer-version \
+            --layer-name "$LAYER_NAME" \
+            --description "pyproj, shapely, pyshp, ezdxf for Sunrise Image Manager" \
+            --compatible-runtimes python3.11 \
+            --content "S3Bucket=${BUCKET:-$LAYER_NAME},S3Key=$S3_KEY" \
+            --region "$REGION" \
+            --query 'LayerVersionArn' \
+            --output text)
+    else
+        LAYER_ARN=$(aws lambda publish-layer-version \
+            --layer-name "$LAYER_NAME" \
+            --description "pyproj, shapely, pyshp, ezdxf for Sunrise Image Manager" \
+            --compatible-runtimes python3.11 \
+            --zip-file "fileb://$FILEB_PATH" \
+            --region "$REGION" \
+            --query 'LayerVersionArn' \
+            --output text)
+    fi
     echo ""
     echo "=== Layer Published ==="
     echo "Layer ARN: $LAYER_ARN"
