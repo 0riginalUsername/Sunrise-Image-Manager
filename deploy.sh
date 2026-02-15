@@ -18,6 +18,7 @@
 #   ./deploy.sh                              # Deploy with defaults
 #   ./deploy.sh --bucket my-bucket-name      # Deploy with custom bucket
 #   ./deploy.sh --geo-layer-arn arn:aws:...   # Deploy with DXF export enabled
+#   ./deploy.sh --cf-alias pano.seihds.com --acm-cert arn:aws:acm:...  # Custom domain
 # ──────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -26,6 +27,8 @@ STACK_NAME="sunrise-image-manager"
 S3_BUCKET="sunrise-image-manager"
 REGION="${AWS_DEFAULT_REGION:-us-east-1}"
 GEO_LAYER_ARN=""
+CF_ALIAS=""
+ACM_CERT=""
 
 # Parse args
 while [[ $# -gt 0 ]]; do
@@ -34,15 +37,18 @@ while [[ $# -gt 0 ]]; do
         --stack)         STACK_NAME="$2"; shift 2 ;;
         --region)        REGION="$2"; shift 2 ;;
         --geo-layer-arn) GEO_LAYER_ARN="$2"; shift 2 ;;
+        --cf-alias)      CF_ALIAS="$2"; shift 2 ;;
+        --acm-cert)      ACM_CERT="$2"; shift 2 ;;
         *) echo "Unknown arg: $1"; exit 1 ;;
     esac
 done
 
 echo "=== Sunrise Image Manager Deployment ==="
-echo "Stack:     $STACK_NAME"
-echo "Bucket:    $S3_BUCKET"
-echo "Region:    $REGION"
-echo "Geo Layer: ${GEO_LAYER_ARN:-<none — DXF export disabled>}"
+echo "Stack:      $STACK_NAME"
+echo "Bucket:     $S3_BUCKET"
+echo "Region:     $REGION"
+echo "Geo Layer:  ${GEO_LAYER_ARN:-<none — DXF export disabled>}"
+echo "CF Alias:   ${CF_ALIAS:-<none — using *.cloudfront.net>}"
 echo ""
 
 # Step 1: SAM build
@@ -55,6 +61,9 @@ echo ">> Deploying CloudFormation stack..."
 PARAM_OVERRIDES="S3BucketName=$S3_BUCKET"
 if [ -n "$GEO_LAYER_ARN" ]; then
     PARAM_OVERRIDES="$PARAM_OVERRIDES GeoLayerArn=$GEO_LAYER_ARN"
+fi
+if [ -n "$CF_ALIAS" ]; then
+    PARAM_OVERRIDES="$PARAM_OVERRIDES CloudFrontAlias=$CF_ALIAS AcmCertificateArn=$ACM_CERT"
 fi
 
 sam deploy \
@@ -90,9 +99,16 @@ COGNITO_CLIENT_ID=$(aws cloudformation describe-stacks \
     --query "Stacks[0].Outputs[?OutputKey=='CognitoClientId'].OutputValue" \
     --output text)
 
+CF_DISTRIBUTION_ID=$(aws cloudformation describe-stacks \
+    --stack-name "$STACK_NAME" \
+    --region "$REGION" \
+    --query "Stacks[0].Outputs[?OutputKey=='CloudFrontDistributionId'].OutputValue" \
+    --output text)
+
 echo ""
 echo ">> API URL:             $API_URL"
 echo ">> Website URL:         $WEBSITE_URL"
+echo ">> CloudFront Dist:     $CF_DISTRIBUTION_ID"
 echo ">> Cognito User Pool:   $COGNITO_USER_POOL_ID"
 echo ">> Cognito Client ID:   $COGNITO_CLIENT_ID"
 
@@ -142,6 +158,15 @@ aws s3 sync "$SCRIPT_DIR/frontend/" "s3://$S3_BUCKET/frontend/" \
 if [ -f "$SCRIPT_DIR/logo.jpg" ]; then
     aws s3 cp "$SCRIPT_DIR/logo.jpg" "s3://$S3_BUCKET/frontend/logo.jpg" --content-type "image/jpeg"
 fi
+
+# Step 5: Invalidate CloudFront cache so new frontend files are served immediately
+echo ""
+echo ">> Invalidating CloudFront cache..."
+aws cloudfront create-invalidation \
+    --distribution-id "$CF_DISTRIBUTION_ID" \
+    --paths "/frontend/*" \
+    --query "Invalidation.Id" \
+    --output text
 
 echo ""
 echo "=== Deployment Complete ==="

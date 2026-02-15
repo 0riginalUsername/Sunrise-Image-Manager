@@ -2,7 +2,7 @@ AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
 Description: >
   Sunrise Image Manager - Fully web-based panoramic image processing.
-  Frontend hosted on S3, API via API Gateway + Lambda, image processing via Lambda.
+  Frontend served via CloudFront + S3, API via API Gateway + Lambda, image processing via Lambda.
 
 Globals:
   Function:
@@ -15,6 +15,14 @@ Parameters:
     Type: String
     Default: sunrise-image-manager
     Description: S3 bucket for uploads, processed output, and static website
+  CloudFrontAlias:
+    Type: String
+    Default: ""
+    Description: Custom domain name for CloudFront (e.g., pano.seihds.com). Requires AcmCertificateArn.
+  AcmCertificateArn:
+    Type: String
+    Default: ""
+    Description: ACM certificate ARN (must be in us-east-1) for the custom domain
   DomainBase:
     Type: String
     Default: https://pano.seihds.com
@@ -58,6 +66,7 @@ Parameters:
 
 Conditions:
   HasGeoLayer: !Not [!Equals [!Ref GeoLayerArn, ""]]
+  HasCustomDomain: !Not [!Equals [!Ref CloudFrontAlias, ""]]
 
 Resources:
 
@@ -99,9 +108,7 @@ Resources:
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Ref S3BucketName
-      WebsiteConfiguration:
-        IndexDocument: index.html
-        ErrorDocument: index.html
+      # No WebsiteConfiguration — content is served via CloudFront
       CorsConfiguration:
         CorsRules:
           - AllowedHeaders: ["*"]
@@ -109,7 +116,48 @@ Resources:
             AllowedOrigins: ["*"]
             MaxAge: 3600
 
-  # Public read policy for the frontend/ and processed/ prefixes
+  # ── CloudFront (serves frontend and processed content from private S3 bucket) ──
+  CloudFrontOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${AWS::StackName}-oac"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        DefaultRootObject: frontend/index.html
+        Comment: !Sub "${AWS::StackName} - Sunrise Image Manager"
+        Aliases: !If
+          - HasCustomDomain
+          - [!Ref CloudFrontAlias]
+          - !Ref "AWS::NoValue"
+        ViewerCertificate: !If
+          - HasCustomDomain
+          - AcmCertificateArn: !Ref AcmCertificateArn
+            SslSupportMethod: sni-only
+            MinimumProtocolVersion: TLSv1.2_2021
+          - CloudFrontDefaultCertificate: true
+        Origins:
+          - Id: S3Origin
+            DomainName: !GetAtt ImageBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt CloudFrontOAC.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachedMethods: [GET, HEAD]
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6  # Managed-CachingOptimized
+          Compress: true
+
+  # Bucket policy: Only CloudFront can read frontend/ and processed/ prefixes
   BucketPolicy:
     Type: AWS::S3::BucketPolicy
     Properties:
@@ -117,13 +165,17 @@ Resources:
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
-          - Sid: PublicReadFrontend
+          - Sid: AllowCloudFrontRead
             Effect: Allow
-            Principal: "*"
+            Principal:
+              Service: cloudfront.amazonaws.com
             Action: s3:GetObject
             Resource:
               - !Sub "arn:aws:s3:::${S3BucketName}/frontend/*"
               - !Sub "arn:aws:s3:::${S3BucketName}/processed/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${CloudFrontDistribution}"
 
   # ── API Gateway ──
   ApiGateway:
@@ -308,8 +360,14 @@ Outputs:
     Value: !Ref ImageBucket
     Description: S3 bucket name
   WebsiteURL:
-    Value: !GetAtt ImageBucket.WebsiteURL
-    Description: S3 static website URL for the frontend
+    Value: !If
+      - HasCustomDomain
+      - !Sub "https://${CloudFrontAlias}"
+      - !Sub "https://${CloudFrontDistribution.DomainName}"
+    Description: CloudFront website URL
+  CloudFrontDistributionId:
+    Value: !Ref CloudFrontDistribution
+    Description: CloudFront distribution ID (for cache invalidation)
   ApiURL:
     Value: !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod"
     Description: API Gateway base URL
