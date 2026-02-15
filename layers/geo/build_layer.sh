@@ -46,6 +46,8 @@ docker run --rm \
     -v "$DOCKER_SCRIPT_DIR:/layer" \
     public.ecr.aws/sam/build-python3.11:latest \
     bash -c "
+        # Upgrade pip so it can find manylinux wheels with bundled native libs
+        pip install --upgrade pip
         pip install \
             pyproj \
             geopandas \
@@ -53,7 +55,8 @@ docker run --rm \
             fiona \
             ezdxf \
             -t /out \
-            --no-cache-dir
+            --no-cache-dir \
+            --prefer-binary
         # Remove unnecessary files to shrink the layer
         find /out -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true
         find /out -type d -name 'tests' -exec rm -rf {} + 2>/dev/null || true
@@ -65,8 +68,15 @@ docker run --rm \
 # Zip it up
 echo ">> Creating ZIP..."
 cd "$SCRIPT_DIR/build"
+
+# For the zip step, use Windows-style path on Git Bash so Python can find it
+ZIP_FILE_NATIVE="$ZIP_FILE"
+if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "mingw"* || "$OSTYPE" == "cygwin" ]]; then
+    ZIP_FILE_NATIVE="$(cygpath -w "$ZIP_FILE" 2>/dev/null || echo "$ZIP_FILE" | sed 's|^/\([a-zA-Z]\)/|\1:/|')"
+fi
+
 if command -v zip &>/dev/null; then
-    zip -r9 "$ZIP_FILE" python/
+    zip -r9 "$ZIP_FILE_NATIVE" python/
 else
     echo "   (zip not found — using Python zipfile)"
     python3 -c "
@@ -76,16 +86,17 @@ with zipfile.ZipFile(sys.argv[1], 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as
         for f in files:
             fp = os.path.join(root, f)
             zf.write(fp)
-" "$ZIP_FILE"
+" "$ZIP_FILE_NATIVE"
 fi
 
-if [ ! -f "$ZIP_FILE" ]; then
-    echo "ERROR: $ZIP_FILE was not created. Docker build may have failed."
+if [ ! -f "$ZIP_FILE_NATIVE" ] && [ ! -f "$ZIP_FILE" ]; then
+    echo "ERROR: Layer zip was not created. Docker build may have failed."
     exit 1
 fi
 
-LAYER_SIZE=$(du -sh "$ZIP_FILE" | cut -f1)
-echo ">> Layer ZIP: $ZIP_FILE ($LAYER_SIZE)"
+LAYER_SIZE=$(du -sh "$ZIP_FILE_NATIVE" 2>/dev/null || du -sh "$ZIP_FILE" | cut -f1)
+LAYER_SIZE=$(echo "$LAYER_SIZE" | cut -f1)
+echo ">> Layer ZIP: $ZIP_FILE_NATIVE ($LAYER_SIZE)"
 
 if [ "$PUBLISH" = true ]; then
     echo ">> Publishing layer to AWS..."
