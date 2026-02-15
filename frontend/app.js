@@ -562,13 +562,22 @@ async function startProcessing() {
     const officeName   = document.getElementById('officeName').value.trim();
     const clientName   = document.getElementById('clientName').value.trim();
     const projectName  = document.getElementById('projectName').value.trim();
-    const employeeName = document.getElementById('employeeName').value;
+    // Use authenticated user's email as employee name
+    let employeeName = '';
+    try {
+        if (currentSession) {
+            employeeName = currentSession.getIdToken().payload.email || '';
+        }
+    } catch (e) { /* ignore */ }
+    if (!employeeName) {
+        const el = document.getElementById('userEmail');
+        employeeName = el ? el.textContent : '';
+    }
 
     // Validate
     if (!officeName) { alert('Please enter an office name.'); return; }
     if (!clientName) { alert('Please enter a client name.'); return; }
     if (!projectName) { alert('Please enter a project name.'); return; }
-    if (!employeeName) { alert('Please select an employee.'); return; }
     if (imageFiles.length === 0) {
         alert('Please add at least one image.');
         return;
