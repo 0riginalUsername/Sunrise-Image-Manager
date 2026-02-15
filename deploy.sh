@@ -66,13 +66,27 @@ if [ -n "$CF_ALIAS" ]; then
     PARAM_OVERRIDES="$PARAM_OVERRIDES CloudFrontAlias=$CF_ALIAS AcmCertificateArn=$ACM_CERT"
 fi
 
-sam deploy \
+set +e
+SAM_OUTPUT=$(sam deploy \
     --stack-name "$STACK_NAME" \
     --region "$REGION" \
     --resolve-s3 \
     --capabilities CAPABILITY_IAM \
     --parameter-overrides $PARAM_OVERRIDES \
-    --no-confirm-changeset
+    --no-confirm-changeset 2>&1)
+SAM_EXIT=$?
+set -e
+
+echo "$SAM_OUTPUT"
+
+if [ $SAM_EXIT -ne 0 ]; then
+    if echo "$SAM_OUTPUT" | grep -q "No changes to deploy"; then
+        echo ">> No infrastructure changes — continuing with frontend upload..."
+    else
+        echo ">> SAM deploy failed!"
+        exit 1
+    fi
+fi
 
 # Get outputs
 API_URL=$(aws cloudformation describe-stacks \
