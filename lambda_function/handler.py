@@ -578,7 +578,8 @@ def register_client_project(office_name, client_name, project_name):
 # Project landing page  (index.html + index.json per project)
 # ---------------------------------------------------------------------------
 def update_project_index(bucket, office_name, client_name, project_name, file_dt, employee_name,
-                         pano_meta, photo_meta, output_prefix, csv_files=None, dxf_file=None):
+                         pano_meta, photo_meta, output_prefix, csv_files=None, dxf_file=None,
+                         plan_background=None):
     """Append the current batch to the project index and deploy the landing page."""
     project_prefix = f"processed/{office_name}/{client_name}/{project_name}/"
     index_key = f"{project_prefix}index.json"
@@ -589,6 +590,10 @@ def update_project_index(bucket, office_name, client_name, project_name, file_dt
         index_data = json.loads(obj["Body"].read().decode("utf-8"))
     except Exception:
         index_data = {"office_name": office_name, "client_name": client_name, "project_name": project_name, "batches": []}
+
+    # Store plan background reference if provided (project-level, not per-batch)
+    if plan_background:
+        index_data["plan_background"] = plan_background
 
     # Check if this project is password-protected
     auth_key = f"state/project-auth/{office_name}/{client_name}/{project_name}.json"
@@ -724,6 +729,7 @@ def lambda_handler(event, context):
         jpeg_quality = manifest.get("jpeg_quality")
         position_csv = manifest.get("position_csv", "")
         submitter_email = manifest.get("submitter_email", "")
+        plan_key = manifest.get("plan_key", "")
 
         # Parse position CSV into lookup dict
         csv_positions = parse_position_csv(position_csv)
@@ -797,9 +803,27 @@ def lambda_handler(event, context):
                     except Exception as e:
                         logger.error("State Plane CSV failed for %s (non-fatal): %s", type_str, e, exc_info=True)
 
+            # Copy plan background to project folder if provided
+            plan_background = None
+            if plan_key:
+                try:
+                    project_prefix = f"processed/{office_name}/{client_name}/{project_name}/"
+                    plan_dest = f"{project_prefix}plan.jpg"
+                    s3.copy_object(
+                        Bucket=bucket,
+                        CopySource={"Bucket": bucket, "Key": plan_key},
+                        Key=plan_dest,
+                        ContentType="image/jpeg",
+                    )
+                    plan_background = "plan.jpg"
+                    logger.info("Plan background copied to s3://%s/%s", bucket, plan_dest)
+                except Exception as e:
+                    logger.error("Failed to copy plan background: %s", e)
+
             # Update project landing page (appendable across batches)
             update_project_index(bucket, office_name, client_name, project_name, file_dt, employee_name,
-                                 pano_meta, photo_meta, output_prefix, csv_files=csv_keys, dxf_file=dxf_key)
+                                 pano_meta, photo_meta, output_prefix, csv_files=csv_keys, dxf_file=dxf_key,
+                                 plan_background=plan_background)
 
             # Send email (include submitter)
             send_email(project_name, client_name, office_name, file_dt, employee_name,

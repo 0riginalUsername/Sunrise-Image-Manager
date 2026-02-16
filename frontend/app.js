@@ -612,6 +612,7 @@ async function startProcessing() {
 
     const panoEntries = imageFiles.filter(e => e.type === 'pano');
     const photoEntries = imageFiles.filter(e => e.type === 'photo');
+    const planFile = document.getElementById('planUpload').files[0] || null;
 
     processBtn.disabled = true;
     showProgress();
@@ -619,17 +620,21 @@ async function startProcessing() {
 
     try {
         // Step 1: Create job and get presigned URLs
+        const createBody = {
+            office_name: officeName,
+            client_name: clientName,
+            project_name: projectName,
+            employee_name: employeeName,
+            pano_files: panoEntries.map(e => e.file.name),
+            photo_files: photoEntries.map(e => e.file.name),
+        };
+        if (planFile) {
+            createBody.plan_file = planFile.name;
+        }
         const createResp = await fetch(`${API_BASE}/create-job`, {
             method: 'POST',
             headers: authHeaders(),
-            body: JSON.stringify({
-                office_name: officeName,
-                client_name: clientName,
-                project_name: projectName,
-                employee_name: employeeName,
-                pano_files: panoEntries.map(e => e.file.name),
-                photo_files: photoEntries.map(e => e.file.name),
-            }),
+            body: JSON.stringify(createBody),
         });
 
         if (!createResp.ok) {
@@ -649,6 +654,10 @@ async function startProcessing() {
             ...jobData.pano_uploads.map(u => ({ ...u, file: panoByName[u.filename] })),
             ...jobData.photo_uploads.map(u => ({ ...u, file: photoByName[u.filename] })),
         ];
+        // Include plan background file if present
+        if (jobData.plan_upload && planFile) {
+            allUploads.push({ ...jobData.plan_upload, file: planFile });
+        }
 
         const totalFiles = allUploads.length;
         let uploaded = 0;
@@ -700,6 +709,9 @@ async function startProcessing() {
             position_csv: positionCsv,
             submitter_email: submitterEmail,
         };
+        if (jobData.plan_upload) {
+            submitBody.plan_key = jobData.plan_upload.key;
+        }
         if (projectPassword) {
             submitBody.project_password = projectPassword;
         }

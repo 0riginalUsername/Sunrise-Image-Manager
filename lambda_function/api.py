@@ -88,6 +88,8 @@ def lambda_handler(event, context):
         return handle_project_auth_check(event)
     elif path == "/api/project-auth" and http_method == "POST":
         return handle_project_auth_verify(event)
+    elif path == "/api/save-plan-transform" and http_method == "POST":
+        return handle_save_plan_transform(event)
     else:
         return cors_response(404, {"error": "Not found"})
 
@@ -129,6 +131,7 @@ def handle_create_job(event):
     pano_files = body.get("pano_files", [])
     photo_files = body.get("photo_files", [])
     image_files = body.get("image_files", [])
+    plan_file = body.get("plan_file", "")
 
     if not office_name or not client_name or not project_name or not employee_name:
         return cors_response(400, {"error": "office_name, client_name, project_name, and employee_name are required"})
@@ -179,13 +182,28 @@ def handle_create_job(event):
     # Flat image_files go to raw/ (unclassified) — handler will auto-classify
     image_uploads = make_uploads(image_files, "images")
 
+    # Plan background file (optional)
+    plan_upload = None
+    if plan_file:
+        safe_plan = sanitize_filename(plan_file)
+        if safe_plan and SAFE_NAME_RE.match(safe_plan):
+            plan_key = f"{job_prefix}raw/plan/{safe_plan}"
+            plan_url = s3.generate_presigned_url(
+                "put_object",
+                Params={"Bucket": BUCKET, "Key": plan_key, "ContentType": "image/jpeg"},
+                ExpiresIn=PRESIGN_EXPIRY,
+            )
+            plan_upload = {"filename": plan_file, "key": plan_key, "upload_url": plan_url}
+        else:
+            rejected.append(plan_file)
+
     if rejected:
         return cors_response(400, {
             "error": f"The following filenames contain unsupported characters and cannot be uploaded: {', '.join(rejected)}. "
                      "Please rename them using only letters, numbers, hyphens, underscores, and dots."
         })
 
-    return cors_response(200, {
+    resp_body = {
         "job_prefix": job_prefix,
         "file_dt": file_dt,
         "office_name": office_name,
@@ -195,7 +213,10 @@ def handle_create_job(event):
         "pano_uploads": pano_uploads,
         "photo_uploads": photo_uploads,
         "image_uploads": image_uploads,
-    })
+    }
+    if plan_upload:
+        resp_body["plan_upload"] = plan_upload
+    return cors_response(200, resp_body)
 
 
 def handle_submit_job(event):
@@ -267,6 +288,11 @@ def handle_submit_job(event):
         "submitter_email": body.get("submitter_email", ""),
         "submitted_at": datetime.utcnow().isoformat() + "Z",
     }
+    plan_key = body.get("plan_key", "")
+    if plan_key:
+        if not plan_key.startswith(expected_prefix) or ".." in plan_key:
+            return cors_response(400, {"error": f"Invalid plan_key: must start with {expected_prefix}"})
+        manifest["plan_key"] = plan_key
 
     manifest_key = f"{job_prefix}manifest.json"
     s3.put_object(
@@ -471,6 +497,67 @@ def handle_project_auth_verify(event):
 
 
 DOMAIN_BASE = os.environ.get("DOMAIN_BASE", "https://pano.seihds.com")
+
+
+def handle_save_plan_transform(event):
+    """
+    Save the plan background alignment transform for a project.
+
+    Expects JSON body:
+    {
+        "office": "OfficeName",
+        "client": "ClientName",
+        "project": "ProjectName",
+        "plan_transform": { "translate_x": 0, "translate_y": 0, "scale": 1, "rotation": 0 }
+    }
+    """
+    try:
+        body = json.loads(event.get("body", "{}"))
+    except (json.JSONDecodeError, TypeError):
+        return cors_response(400, {"error": "Invalid JSON body"})
+
+    office = body.get("office", "").strip().replace(" ", "_")
+    client = body.get("client", "").strip().replace(" ", "_")
+    project = body.get("project", "").strip().replace(" ", "_")
+    transform = body.get("plan_transform")
+
+    if not office or not client or not project or not transform:
+        return cors_response(400, {"error": "office, client, project, and plan_transform are required"})
+    for name, label in [(office, "office"), (client, "client"), (project, "project")]:
+        if not SAFE_NAME_RE.match(name):
+            return cors_response(400, {"error": f"Invalid {label}"})
+
+    # Validate transform fields
+    allowed_keys = {"translate_x", "translate_y", "scale", "rotation"}
+    if not isinstance(transform, dict) or not all(k in allowed_keys for k in transform):
+        return cors_response(400, {"error": "plan_transform must contain translate_x, translate_y, scale, rotation"})
+
+    index_key = f"processed/{office}/{client}/{project}/index.json"
+    try:
+        obj = s3.get_object(Bucket=BUCKET, Key=index_key)
+        index_data = json.loads(obj["Body"].read().decode("utf-8"))
+    except s3.exceptions.NoSuchKey:
+        return cors_response(404, {"error": "Project not found"})
+    except Exception as e:
+        logger.error("Error reading project index: %s", e)
+        return cors_response(500, {"error": "Failed to read project index"})
+
+    index_data["plan_transform"] = {
+        "translate_x": float(transform.get("translate_x", 0)),
+        "translate_y": float(transform.get("translate_y", 0)),
+        "scale": float(transform.get("scale", 1)),
+        "rotation": float(transform.get("rotation", 0)),
+    }
+
+    s3.put_object(
+        Bucket=BUCKET, Key=index_key,
+        Body=json.dumps(index_data, indent=2).encode("utf-8"),
+        ContentType="application/json",
+        CacheControl="no-cache, no-store, must-revalidate",
+    )
+
+    logger.info("Saved plan transform for %s/%s/%s", office, client, project)
+    return cors_response(200, {"message": "Plan alignment saved"})
 
 
 def handle_project_index(event):

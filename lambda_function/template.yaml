@@ -386,6 +386,23 @@ Resources:
             Method: OPTIONS
             Auth:
               Authorizer: NONE
+        # Plan alignment save (no Cognito auth — called from landing pages)
+        SavePlanTransform:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /api/save-plan-transform
+            Method: POST
+            Auth:
+              Authorizer: NONE
+        CorsSavePlanTransform:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /api/save-plan-transform
+            Method: OPTIONS
+            Auth:
+              Authorizer: NONE
 
   # ── Processing Lambda (image compression, HTML gen, CSV, DXF, email) ──
   ProcessingFunction:
