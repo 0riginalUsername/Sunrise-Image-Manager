@@ -423,8 +423,17 @@ async function removeProjectPassword() {
 // ── Batch options ────────────────────────────────────────────────────────
 const qualitySlider = document.getElementById('jpegQuality');
 const qualityValue  = document.getElementById('qualityValue');
+const keepOriginalsCheckbox = document.getElementById('keepOriginals');
+const qualityGroup  = document.getElementById('qualityGroup');
+
 qualitySlider.addEventListener('input', () => {
     qualityValue.textContent = qualitySlider.value;
+});
+
+keepOriginalsCheckbox.addEventListener('change', () => {
+    const disabled = keepOriginalsCheckbox.checked;
+    qualitySlider.disabled = disabled;
+    qualityGroup.style.opacity = disabled ? '0.4' : '1';
 });
 
 // ── Auto-classification ──────────────────────────────────────────────────
@@ -585,6 +594,7 @@ async function startProcessing() {
 
     // Read batch options
     const keepFilenames = document.getElementById('keepFilenames').checked;
+    const keepOriginals = document.getElementById('keepOriginals').checked;
     const jpegQuality = parseInt(document.getElementById('jpegQuality').value, 10);
     const projectPassword = document.getElementById('projectPassword').value;
     let positionCsv = '';
@@ -674,6 +684,7 @@ async function startProcessing() {
             pano_keys: jobData.pano_uploads.map(u => u.key),
             photo_keys: jobData.photo_uploads.map(u => u.key),
             keep_filenames: keepFilenames,
+            keep_originals: keepOriginals,
             jpeg_quality: jpegQuality,
             position_csv: positionCsv,
             submitter_email: submitterEmail,
@@ -701,6 +712,9 @@ async function startProcessing() {
 
         setProgress(100, 'Processing complete!', false);
         statusText.className = 'status-text success';
+
+        // Invalidate browse cache so new project shows up
+        browseLoaded = false;
 
         showResult(
             `All images processed and published. ${panoEntries.length} panoramas and ${photoEntries.length} photos.`,
@@ -776,3 +790,170 @@ async function pollJobStatus(jobPrefix) {
 
     throw new Error('Processing timed out. Please check the server.');
 }
+
+
+// ── App tabs (Upload / Browse) ────────────────────────────────────────
+function showAppTab(tab) {
+    document.getElementById('tabUpload').classList.toggle('active', tab === 'upload');
+    document.getElementById('tabBrowse').classList.toggle('active', tab === 'browse');
+    document.getElementById('uploadSection').style.display = tab === 'upload' ? 'block' : 'none';
+    const browseEl = document.getElementById('browseSection');
+    if (tab === 'browse') {
+        browseEl.classList.add('visible');
+        loadBrowseProjects();
+    } else {
+        browseEl.classList.remove('visible');
+    }
+}
+
+// ── Browse projects ──────────────────────────────────────────────────
+let browseData = null;  // cached project index data
+let browseLoaded = false;
+
+const browseOffice  = document.getElementById('browseOffice');
+const browseClient  = document.getElementById('browseClient');
+const browseProject = document.getElementById('browseProject');
+const projectGrid   = document.getElementById('projectGrid');
+
+browseOffice.addEventListener('change', () => {
+    populateBrowseClients();
+    populateBrowseProjects();
+    renderProjectCards();
+});
+browseClient.addEventListener('change', () => {
+    populateBrowseProjects();
+    renderProjectCards();
+});
+browseProject.addEventListener('change', () => {
+    renderProjectCards();
+});
+
+async function loadBrowseProjects() {
+    if (browseLoaded) return;
+    const loadingEl = document.getElementById('browseLoading');
+    const emptyEl = document.getElementById('browseEmpty');
+    loadingEl.style.display = 'block';
+    emptyEl.style.display = 'none';
+    projectGrid.innerHTML = '';
+
+    try {
+        const resp = await fetch(`${API_BASE}/project-index`, { headers: authHeaders() });
+        if (resp.ok) {
+            const data = await resp.json();
+            browseData = data.projects || {};
+            browseLoaded = true;
+            populateBrowseOffices();
+            renderProjectCards();
+        }
+    } catch (err) {
+        console.warn('Could not load project index:', err);
+    } finally {
+        loadingEl.style.display = 'none';
+    }
+}
+
+function populateBrowseOffices() {
+    const current = browseOffice.value;
+    browseOffice.innerHTML = '<option value="">All Offices</option>';
+    for (const office of Object.keys(browseData).sort()) {
+        const opt = document.createElement('option');
+        opt.value = office;
+        opt.textContent = office.replace(/_/g, ' ');
+        browseOffice.appendChild(opt);
+    }
+    browseOffice.value = current;
+    populateBrowseClients();
+}
+
+function populateBrowseClients() {
+    const selectedOffice = browseOffice.value;
+    const current = browseClient.value;
+    browseClient.innerHTML = '<option value="">All Clients</option>';
+    const offices = selectedOffice ? { [selectedOffice]: browseData[selectedOffice] || {} } : browseData;
+    const clientSet = new Set();
+    for (const clients of Object.values(offices)) {
+        for (const cli of Object.keys(clients || {})) {
+            clientSet.add(cli);
+        }
+    }
+    for (const cli of [...clientSet].sort()) {
+        const opt = document.createElement('option');
+        opt.value = cli;
+        opt.textContent = cli.replace(/_/g, ' ');
+        browseClient.appendChild(opt);
+    }
+    browseClient.value = clientSet.has(current) ? current : '';
+    populateBrowseProjects();
+}
+
+function populateBrowseProjects() {
+    const selectedOffice = browseOffice.value;
+    const selectedClient = browseClient.value;
+    const current = browseProject.value;
+    browseProject.innerHTML = '<option value="">All Projects</option>';
+    const projectSet = new Set();
+    const offices = selectedOffice ? { [selectedOffice]: browseData[selectedOffice] || {} } : browseData;
+    for (const clients of Object.values(offices)) {
+        const clientMap = selectedClient ? { [selectedClient]: clients[selectedClient] || [] } : clients;
+        for (const projects of Object.values(clientMap || {})) {
+            for (const proj of (projects || [])) {
+                projectSet.add(proj.name);
+            }
+        }
+    }
+    for (const proj of [...projectSet].sort()) {
+        const opt = document.createElement('option');
+        opt.value = proj;
+        opt.textContent = proj.replace(/_/g, ' ');
+        browseProject.appendChild(opt);
+    }
+    browseProject.value = projectSet.has(current) ? current : '';
+}
+
+function renderProjectCards() {
+    if (!browseData) return;
+    const selectedOffice = browseOffice.value;
+    const selectedClient = browseClient.value;
+    const selectedProject = browseProject.value;
+    const emptyEl = document.getElementById('browseEmpty');
+
+    projectGrid.innerHTML = '';
+    let count = 0;
+
+    const offices = selectedOffice ? { [selectedOffice]: browseData[selectedOffice] || {} } : browseData;
+    for (const [officeName, clients] of Object.entries(offices).sort()) {
+        const clientMap = selectedClient ? { [selectedClient]: clients[selectedClient] || [] } : clients;
+        for (const [clientName, projects] of Object.entries(clientMap || {}).sort()) {
+            for (const proj of (projects || [])) {
+                if (selectedProject && proj.name !== selectedProject) continue;
+
+                const card = document.createElement('a');
+                card.className = 'project-card';
+                card.href = proj.landing_url;
+                card.target = '_blank';
+
+                const lastUpload = proj.last_upload
+                    ? new Date(proj.last_upload).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+                    : '';
+
+                card.innerHTML = `
+                    <h3>${proj.name.replace(/_/g, ' ')}${proj.protected ? '<span class="pw-icon" title="Password protected">&#x1F512;</span>' : ''}</h3>
+                    <div class="project-client">${officeName.replace(/_/g, ' ')} / ${clientName.replace(/_/g, ' ')}</div>
+                    <div class="project-stats">
+                        <span class="stat"><span class="stat-label">Batches:</span> ${proj.batch_count || 0}</span>
+                        <span class="stat"><span class="stat-label">Pano:</span> ${proj.pano_count || 0}</span>
+                        <span class="stat"><span class="stat-label">Photo:</span> ${proj.photo_count || 0}</span>
+                    </div>
+                    ${lastUpload ? `<div class="project-meta">Last upload: ${lastUpload}${proj.last_employee ? ' by ' + proj.last_employee : ''}</div>` : ''}
+                `;
+                projectGrid.appendChild(card);
+                count++;
+            }
+        }
+    }
+
+    emptyEl.style.display = count === 0 ? 'block' : 'none';
+}
+
+// Expose tab function globally (called from onclick)
+window.showAppTab = showAppTab;

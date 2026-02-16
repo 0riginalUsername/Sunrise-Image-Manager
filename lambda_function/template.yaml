@@ -208,6 +208,7 @@ Resources:
           PRESIGN_EXPIRY: "3600"
           ALLOWED_ORIGIN: !Ref AllowedOrigin
           CLIENTS_KEY: state/clients.json
+          DOMAIN_BASE: !Ref DomainBase
       Policies:
         - S3CrudPolicy:
             BucketName: !Ref S3BucketName
@@ -235,6 +236,13 @@ Resources:
           Properties:
             RestApiId: !Ref ApiGateway
             Path: /api/clients
+            Method: GET
+        # Project index (browse projects view — Cognito auth required)
+        ProjectIndex:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /api/project-index
             Method: GET
         # Project password management (Cognito auth required — team only)
         ManageProjectPassword:
@@ -290,6 +298,14 @@ Resources:
           Properties:
             RestApiId: !Ref ApiGateway
             Path: /api/clients
+            Method: OPTIONS
+            Auth:
+              Authorizer: NONE
+        CorsProjectIndex:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /api/project-index
             Method: OPTIONS
             Auth:
               Authorizer: NONE

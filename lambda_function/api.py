@@ -78,6 +78,8 @@ def lambda_handler(event, context):
         return handle_get_clients(event)
     elif path == "/api/project-password" and http_method == "POST":
         return handle_manage_project_password(event)
+    elif path == "/api/project-index" and http_method == "GET":
+        return handle_project_index(event)
     elif path == "/api/project-auth" and http_method == "GET":
         return handle_project_auth_check(event)
     elif path == "/api/project-auth" and http_method == "POST":
@@ -219,6 +221,7 @@ def handle_submit_job(event):
         "photo_keys": body.get("photo_keys", []),
         "image_keys": body.get("image_keys", []),
         "keep_filenames": body.get("keep_filenames", False),
+        "keep_originals": body.get("keep_originals", False),
         "jpeg_quality": body.get("jpeg_quality"),
         "position_csv": body.get("position_csv", ""),
         "submitter_email": body.get("submitter_email", ""),
@@ -416,3 +419,90 @@ def handle_project_auth_verify(event):
     except Exception as e:
         logger.error("Error verifying project auth: %s", e)
         return cors_response(500, {"error": "Failed to verify password"})
+
+
+DOMAIN_BASE = os.environ.get("DOMAIN_BASE", "https://pano.seihds.com")
+
+
+def handle_project_index(event):
+    """
+    Return project summary for the Browse Projects view.
+
+    Query parameters (all optional, for filtering):
+      ?office=OfficeName&client=ClientName
+
+    Returns the client registry enriched with summary data for each project.
+    If office and client are specified, returns detailed batch info from index.json.
+    """
+    params = event.get("queryStringParameters") or {}
+    office = params.get("office", "").strip()
+    client = params.get("client", "").strip()
+    project = params.get("project", "").strip()
+
+    # If a specific project is requested, return its index.json
+    if office and client and project:
+        index_key = f"processed/{office}/{client}/{project}/index.json"
+        try:
+            obj = s3.get_object(Bucket=BUCKET, Key=index_key)
+            index_data = json.loads(obj["Body"].read().decode("utf-8"))
+            # Add landing page URL
+            index_data["landing_url"] = f"{DOMAIN_BASE}/processed/{office}/{client}/{project}/index.html"
+            return cors_response(200, index_data)
+        except s3.exceptions.NoSuchKey:
+            return cors_response(404, {"error": "Project not found"})
+        except Exception as e:
+            logger.error("Error reading project index: %s", e)
+            return cors_response(500, {"error": "Failed to read project index"})
+
+    # Otherwise, build summaries from the client registry + index.json files
+    try:
+        obj = s3.get_object(Bucket=BUCKET, Key=CLIENTS_KEY)
+        registry = json.loads(obj["Body"].read().decode("utf-8"))
+    except Exception:
+        registry = {}
+
+    # Filter by office if specified
+    if office:
+        registry = {office: registry.get(office, {})}
+
+    # Filter by client if specified
+    if client and office:
+        clients = registry.get(office, {})
+        registry = {office: {client: clients.get(client, [])}}
+
+    # Build summary: for each project, try to read a lightweight summary from index.json
+    result = {}
+    for off_name, clients_map in registry.items():
+        result[off_name] = {}
+        for cli_name, projects in clients_map.items():
+            result[off_name][cli_name] = []
+            for proj_name in projects:
+                summary = {
+                    "name": proj_name,
+                    "landing_url": f"{DOMAIN_BASE}/processed/{off_name}/{cli_name}/{proj_name}/index.html",
+                }
+                # Try to read index.json for batch/image counts
+                index_key = f"processed/{off_name}/{cli_name}/{proj_name}/index.json"
+                try:
+                    obj = s3.get_object(Bucket=BUCKET, Key=index_key)
+                    index_data = json.loads(obj["Body"].read().decode("utf-8"))
+                    batches = index_data.get("batches", [])
+                    total_pano = sum(b.get("pano_count", 0) for b in batches)
+                    total_photo = sum(b.get("photo_count", 0) for b in batches)
+                    last_batch = batches[-1] if batches else {}
+                    summary["batch_count"] = len(batches)
+                    summary["pano_count"] = total_pano
+                    summary["photo_count"] = total_photo
+                    summary["last_upload"] = last_batch.get("submitted_at", "")
+                    summary["last_employee"] = last_batch.get("employee", "")
+                    summary["protected"] = index_data.get("protected", False)
+                except Exception:
+                    summary["batch_count"] = 0
+                    summary["pano_count"] = 0
+                    summary["photo_count"] = 0
+                    summary["last_upload"] = ""
+                    summary["last_employee"] = ""
+                    summary["protected"] = False
+                result[off_name][cli_name].append(summary)
+
+    return cors_response(200, {"projects": result})

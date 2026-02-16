@@ -687,6 +687,7 @@ def lambda_handler(event, context):
         photo_keys = list(manifest.get("photo_keys", []))
         image_keys = manifest.get("image_keys", [])
         keep_filenames = manifest.get("keep_filenames", False)
+        keep_originals = manifest.get("keep_originals", False)
         jpeg_quality = manifest.get("jpeg_quality")
         position_csv = manifest.get("position_csv", "")
         submitter_email = manifest.get("submitter_email", "")
@@ -723,9 +724,9 @@ def lambda_handler(event, context):
 
             # Process panos and photos
             pano_meta = process_image_set(bucket, pano_keys, output_prefix, client_name, project_name, file_dt, "Pano", pano_template_str,
-                                          keep_filenames=keep_filenames, jpeg_quality=jpeg_quality, csv_positions=csv_positions)
+                                          keep_filenames=keep_filenames, keep_originals=keep_originals, jpeg_quality=jpeg_quality, csv_positions=csv_positions)
             photo_meta = process_image_set(bucket, photo_keys, output_prefix, client_name, project_name, file_dt, "Photo", img_template_str,
-                                           keep_filenames=keep_filenames, jpeg_quality=jpeg_quality, csv_positions=csv_positions)
+                                           keep_filenames=keep_filenames, keep_originals=keep_originals, jpeg_quality=jpeg_quality, csv_positions=csv_positions)
 
             # Generate CSVs
             first_link = None
@@ -787,7 +788,7 @@ def lambda_handler(event, context):
 
 
 def process_image_set(bucket, s3_keys, output_prefix, client_name, project_name, file_dt, type_str, template_str,
-                      keep_filenames=False, jpeg_quality=None, csv_positions=None):
+                      keep_filenames=False, keep_originals=False, jpeg_quality=None, csv_positions=None):
     """
     Download raw images from S3, extract metadata, rename, compress, generate HTML,
     upload processed outputs back to S3. Returns list of metadata dicts.
@@ -855,15 +856,18 @@ def process_image_set(bucket, s3_keys, output_prefix, client_name, project_name,
             final_name = f"{prefix}{number:03d}.jpg"
             base_name = f"{prefix}{number:03d}"
 
-        # Compress
-        compressed_bytes, content_type = compress_image(img_data["bytes"], quality=jpeg_quality)
+        # Compress (or keep original)
+        if keep_originals:
+            output_bytes, content_type = img_data["bytes"], "image/jpeg"
+        else:
+            output_bytes, content_type = compress_image(img_data["bytes"], quality=jpeg_quality)
 
-        # Upload compressed image to S3
+        # Upload image to S3
         img_key = f"{output_prefix}{final_name}"
         s3.put_object(
             Bucket=bucket,
             Key=img_key,
-            Body=compressed_bytes,
+            Body=output_bytes,
             ContentType=content_type,
         )
 
