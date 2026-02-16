@@ -40,14 +40,15 @@ try:
     from shapely.geometry import Point, shape
     from pyproj import Transformer
     HAS_GEO = True
-except ImportError as _geo_err:
+except Exception as _geo_err:
     HAS_GEO = False
     # Log at module level so we can diagnose layer attachment issues
     import logging as _logging
-    _logging.getLogger().warning("Geo layer import failed: %s", _geo_err)
+    _logging.getLogger().warning("Geo layer import failed (%s): %s", type(_geo_err).__name__, _geo_err)
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
+logger.info("Geo layer available: %s", HAS_GEO)
 
 s3 = boto3.client("s3")
 
@@ -731,16 +732,24 @@ def lambda_handler(event, context):
                     first_link = link
 
             # Generate DXF and State Plane CSVs (if geo layer is available)
-            dxf_key = export_dxf(bucket, pano_meta, photo_meta, office_name, client_name, project_name, file_dt, output_prefix)
+            dxf_key = None
+            try:
+                dxf_key = export_dxf(bucket, pano_meta, photo_meta, office_name, client_name, project_name, file_dt, output_prefix)
+            except Exception as e:
+                logger.error("DXF export failed (non-fatal): %s", e, exc_info=True)
+
             if HAS_GEO:
                 for meta_list, type_str in [(pano_meta, "pano"), (photo_meta, "photo")]:
                     if not meta_list:
                         continue
-                    sp_content = generate_state_plane_csv(meta_list, output_prefix, type_str)
-                    if sp_content:
-                        sp_key = f"{output_prefix}{file_dt}_{client_name}_{project_name}_{type_str}_StatePlane.csv"
-                        s3.put_object(Bucket=bucket, Key=sp_key, Body=sp_content.encode("utf-8"), ContentType="text/csv")
-                        csv_keys.append(sp_key)
+                    try:
+                        sp_content = generate_state_plane_csv(meta_list, output_prefix, type_str)
+                        if sp_content:
+                            sp_key = f"{output_prefix}{file_dt}_{client_name}_{project_name}_{type_str}_StatePlane.csv"
+                            s3.put_object(Bucket=bucket, Key=sp_key, Body=sp_content.encode("utf-8"), ContentType="text/csv")
+                            csv_keys.append(sp_key)
+                    except Exception as e:
+                        logger.error("State Plane CSV failed for %s (non-fatal): %s", type_str, e, exc_info=True)
 
             # Update project landing page (appendable across batches)
             update_project_index(bucket, office_name, client_name, project_name, file_dt, employee_name,
