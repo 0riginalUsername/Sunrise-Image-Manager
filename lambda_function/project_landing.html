@@ -580,6 +580,9 @@ function renderMap() {
 
     var markers = L.markerClusterGroup();
 
+    var mapPanoViewer = null;
+    var panoPopupId = 0;
+
     geoImages.forEach(function(img) {
         var isPano = img.type === 'pano';
         var marker = L.circleMarker([img.lat, img.lon], {
@@ -591,13 +594,43 @@ function renderMap() {
         });
 
         var label = isPano ? 'View 360&deg; Panorama' : 'View Photo';
-        var popup = '<div style="text-align:center;min-width:180px;">'
-            + '<img src="' + img.src + '" style="width:180px;height:auto;border-radius:4px;margin-bottom:6px;" loading="lazy" />'
-            + '<div style="font-weight:600;font-size:13px;">' + img.filename.replace('.jpg', '') + '</div>'
-            + '<div style="font-size:11px;color:#666;">' + (img.date_time || '') + '</div>'
-            + '<a href="' + img.viewer + '" target="_blank" style="display:inline-block;margin-top:6px;padding:4px 12px;background:#113e59;color:white;border-radius:4px;font-size:12px;text-decoration:none;">' + label + '</a>'
-            + '</div>';
-        marker.bindPopup(popup, { maxWidth: 220 });
+        var popupContent;
+        if (isPano) {
+            var thisId = 'mapPano' + (panoPopupId++);
+            popupContent = '<div style="text-align:center;min-width:320px;">'
+                + '<div id="' + thisId + '" style="width:320px;height:200px;border-radius:4px;margin-bottom:6px;"></div>'
+                + '<div style="font-weight:600;font-size:13px;">' + img.filename.replace('.jpg', '') + '</div>'
+                + '<div style="font-size:11px;color:#666;">' + (img.date_time || '') + '</div>'
+                + '<a href="' + img.viewer + '" target="_blank" style="display:inline-block;margin-top:6px;padding:4px 12px;background:#113e59;color:white;border-radius:4px;font-size:12px;text-decoration:none;">' + label + '</a>'
+                + '</div>';
+            marker.on('popupopen', (function(elId, src) {
+                return function() {
+                    if (mapPanoViewer) { try { mapPanoViewer.destroy(); } catch(e) {} mapPanoViewer = null; }
+                    var el = document.getElementById(elId);
+                    if (el) {
+                        mapPanoViewer = pannellum.viewer(elId, {
+                            type: 'equirectangular',
+                            panorama: src,
+                            autoLoad: true,
+                            hfov: 120,
+                            compass: false,
+                            showControls: false
+                        });
+                    }
+                };
+            })(thisId, img.src));
+            marker.on('popupclose', function() {
+                if (mapPanoViewer) { try { mapPanoViewer.destroy(); } catch(e) {} mapPanoViewer = null; }
+            });
+        } else {
+            popupContent = '<div style="text-align:center;min-width:180px;">'
+                + '<img src="' + img.src + '" style="width:180px;height:auto;border-radius:4px;margin-bottom:6px;" loading="lazy" />'
+                + '<div style="font-weight:600;font-size:13px;">' + img.filename.replace('.jpg', '') + '</div>'
+                + '<div style="font-size:11px;color:#666;">' + (img.date_time || '') + '</div>'
+                + '<a href="' + img.viewer + '" target="_blank" style="display:inline-block;margin-top:6px;padding:4px 12px;background:#113e59;color:white;border-radius:4px;font-size:12px;text-decoration:none;">' + label + '</a>'
+                + '</div>';
+        }
+        marker.bindPopup(popupContent, { maxWidth: isPano ? 360 : 220 });
         markers.addLayer(marker);
     });
 
