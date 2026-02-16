@@ -392,7 +392,10 @@ def latlon_to_state_plane(lat, lon, alt=None):
     reader = shapefile.Reader(shp_path)
     fields = [f[0] for f in reader.fields[1:]]  # skip DeletionFlag
     for sr in reader.iterShapeRecords():
-        geom = shape(sr.shape.__geo_interface__)
+        try:
+            geom = shape(sr.shape.__geo_interface__)
+        except Exception:
+            continue  # skip unsupported geometry types (e.g. MULTIPATCH)
         if geom.contains(pt):
             rec = dict(zip(fields, sr.record))
             epsg = int(rec["EPSG"])
