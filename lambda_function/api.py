@@ -143,12 +143,26 @@ def handle_create_job(event):
     file_dt = datetime.utcnow().strftime("%d%b%y_%I-%M%p")
     job_prefix = f"uploads/{office_name}/{client_name}/{project_name}/{file_dt}/"
 
+    def sanitize_filename(name):
+        """Replace spaces with underscores and strip all characters not in [A-Za-z0-9_.-]."""
+        name = name.replace(" ", "_")
+        name = re.sub(r'[^A-Za-z0-9_\-\.]', '', name)
+        # Ensure it starts with an alphanumeric character
+        name = name.lstrip('_-.')
+        # Truncate to 128 characters
+        if len(name) > 128:
+            name = name[:128]
+        return name
+
+    rejected = []
+
     def make_uploads(filenames, subdir):
         uploads = []
         for fname in filenames:
-            safe_name = fname.replace(" ", "_")
-            if not SAFE_NAME_RE.match(safe_name):
-                continue  # skip files with dangerous characters
+            safe_name = sanitize_filename(fname)
+            if not safe_name or not SAFE_NAME_RE.match(safe_name):
+                rejected.append(fname)
+                continue
             key = f"{job_prefix}raw/{subdir}/{safe_name}"
             url = s3.generate_presigned_url(
                 "put_object",
@@ -164,6 +178,12 @@ def handle_create_job(event):
 
     # Flat image_files go to raw/ (unclassified) — handler will auto-classify
     image_uploads = make_uploads(image_files, "images")
+
+    if rejected:
+        return cors_response(400, {
+            "error": f"The following filenames contain unsupported characters and cannot be uploaded: {', '.join(rejected)}. "
+                     "Please rename them using only letters, numbers, hyphens, underscores, and dots."
+        })
 
     return cors_response(200, {
         "job_prefix": job_prefix,

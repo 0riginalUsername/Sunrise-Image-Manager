@@ -641,9 +641,13 @@ async function startProcessing() {
         setProgress(5, 'Uploading images to server...', false);
 
         // Step 2: Upload all files directly to S3 via presigned URLs
+        // Match uploads back to local files by filename (not index) in case
+        // the API sanitised or reordered them.
+        const panoByName = Object.fromEntries(panoEntries.map(e => [e.file.name, e.file]));
+        const photoByName = Object.fromEntries(photoEntries.map(e => [e.file.name, e.file]));
         const allUploads = [
-            ...jobData.pano_uploads.map((u, i) => ({ ...u, file: panoEntries[i].file })),
-            ...jobData.photo_uploads.map((u, i) => ({ ...u, file: photoEntries[i].file })),
+            ...jobData.pano_uploads.map(u => ({ ...u, file: panoByName[u.filename] })),
+            ...jobData.photo_uploads.map(u => ({ ...u, file: photoByName[u.filename] })),
         ];
 
         const totalFiles = allUploads.length;
