@@ -59,6 +59,10 @@ Parameters:
     Type: String
     Default: "https://pano.seihds.com"
     Description: CORS allowed origin for the API (set to your domain in production)
+  AllowedSignUpDomain:
+    Type: String
+    Default: ""
+    Description: If set, only emails from this domain can sign up (e.g., seihds.com)
   GeoLayerArn:
     Type: String
     Default: ""
@@ -67,10 +71,41 @@ Parameters:
 Conditions:
   HasGeoLayer: !Not [!Equals [!Ref GeoLayerArn, ""]]
   HasCustomDomain: !Not [!Equals [!Ref CloudFrontAlias, ""]]
+  HasSignUpDomainFilter: !Not [!Equals [!Ref AllowedSignUpDomain, ""]]
 
 Resources:
 
   # ── Cognito User Pool (email/password authentication for upload page) ──
+  # ── Pre Sign-Up trigger: restrict sign-ups to a single email domain ──
+  PreSignUpFunction:
+    Type: AWS::Serverless::Function
+    Condition: HasSignUpDomainFilter
+    Properties:
+      Handler: index.handler
+      Runtime: python3.11
+      Timeout: 5
+      MemorySize: 128
+      InlineCode: |
+        import os
+        def handler(event, context):
+            domain = os.environ["ALLOWED_DOMAIN"].lower()
+            email = event["request"]["userAttributes"].get("email", "")
+            if not email.lower().endswith("@" + domain):
+                raise Exception(f"Sign-up restricted to @{domain} addresses.")
+            return event
+      Environment:
+        Variables:
+          ALLOWED_DOMAIN: !Ref AllowedSignUpDomain
+
+  PreSignUpInvokePermission:
+    Type: AWS::Lambda::Permission
+    Condition: HasSignUpDomainFilter
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt PreSignUpFunction.Arn
+      Principal: cognito-idp.amazonaws.com
+      SourceArn: !GetAtt CognitoUserPool.Arn
+
   CognitoUserPool:
     Type: AWS::Cognito::UserPool
     Properties:
@@ -79,6 +114,10 @@ Resources:
         - email
       AutoVerifiedAttributes:
         - email
+      LambdaConfig: !If
+        - HasSignUpDomainFilter
+        - PreSignUp: !GetAtt PreSignUpFunction.Arn
+        - !Ref "AWS::NoValue"
       Policies:
         PasswordPolicy:
           MinimumLength: 8

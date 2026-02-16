@@ -24,6 +24,7 @@
 #               --email-user noreply@example.com --email-pass SECRET \
 #               --email-sender noreply@example.com \
 #               --email-recipients "alice@example.com,bob@example.com"
+#   ./deploy.sh --signup-domain seihds.com    # Only allow @seihds.com sign-ups
 # ──────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -41,6 +42,7 @@ EMAIL_USER=""
 EMAIL_PASS=""
 EMAIL_SENDER=""
 EMAIL_RECIPIENTS=""
+SIGNUP_DOMAIN=""
 
 # Parse args
 while [[ $# -gt 0 ]]; do
@@ -58,6 +60,7 @@ while [[ $# -gt 0 ]]; do
         --email-pass)    EMAIL_PASS="$2"; shift 2 ;;
         --email-sender)  EMAIL_SENDER="$2"; shift 2 ;;
         --email-recipients) EMAIL_RECIPIENTS="$2"; shift 2 ;;
+        --signup-domain) SIGNUP_DOMAIN="$2"; shift 2 ;;
         *) echo "Unknown arg: $1"; exit 1 ;;
     esac
 done
@@ -87,6 +90,7 @@ echo "Region:     $REGION"
 echo "Geo Layer:  ${GEO_LAYER_ARN:-<none — DXF export disabled>}"
 echo "CF Alias:   ${CF_ALIAS:-<none — using *.cloudfront.net>}"
 echo "Email SMTP: ${EMAIL_HOST:-<not configured>}"
+echo "Sign-up:    ${SIGNUP_DOMAIN:-<any email domain>}"
 echo ""
 
 # Step 1: SAM build
@@ -105,6 +109,9 @@ if [ -n "$CF_ALIAS" ]; then
 fi
 if [ -n "$EMAIL_HOST" ]; then
     PARAM_OVERRIDES="$PARAM_OVERRIDES EmailHost=$EMAIL_HOST EmailPort=$EMAIL_PORT EmailUser=$EMAIL_USER EmailPass=$EMAIL_PASS EmailSender=$EMAIL_SENDER EmailRecipients=$EMAIL_RECIPIENTS"
+fi
+if [ -n "$SIGNUP_DOMAIN" ]; then
+    PARAM_OVERRIDES="$PARAM_OVERRIDES AllowedSignUpDomain=$SIGNUP_DOMAIN"
 fi
 
 set +e
