@@ -102,11 +102,22 @@
             padding: 12px 16px;
             background: var(--navy);
             color: var(--white);
-            border-radius: 8px 8px 0 0;
+            border-radius: 8px;
             margin-top: 24px;
             font-size: 14px;
+            cursor: pointer;
+            user-select: none;
+            transition: border-radius 0.2s;
         }
+        .batch-header.expanded { border-radius: 8px 8px 0 0; }
         .batch-header:first-child { margin-top: 0; }
+        .batch-toggle {
+            margin-right: 10px;
+            font-size: 12px;
+            transition: transform 0.2s;
+            display: inline-block;
+        }
+        .batch-header.expanded .batch-toggle { transform: rotate(90deg); }
         .batch-downloads a {
             color: var(--yellow);
             text-decoration: none;
@@ -117,7 +128,7 @@
 
         /* ── Gallery grid ── */
         .gallery-grid {
-            display: grid;
+            display: none;
             grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
             gap: 12px;
             padding: 16px;
@@ -125,6 +136,7 @@
             border-radius: 0 0 8px 8px;
             margin-bottom: 4px;
         }
+        .gallery-grid.expanded { display: grid; }
         .gallery-card {
             border-radius: 6px;
             overflow: hidden;
@@ -675,11 +687,11 @@ function renderGallery(filter) {
         if (batch.dxf_file) {
             downloads += '<a href="' + batch.dxf_file + '" download>DXF</a>';
         }
-        header.innerHTML = '<span>' + dateStr + ' &mdash; ' + batch.employee + ' (' + group.images.length + ' images)</span>'
+        header.innerHTML = '<span><span class="batch-toggle">&#9654;</span>' + dateStr + ' &mdash; ' + batch.employee + ' (' + group.images.length + ' images)</span>'
             + '<span class="batch-downloads">' + downloads + '</span>';
         container.appendChild(header);
 
-        /* Gallery grid */
+        /* Gallery grid (collapsed by default) */
         var grid = document.createElement('div');
         grid.className = 'gallery-grid';
 
@@ -700,6 +712,16 @@ function renderGallery(filter) {
         });
 
         container.appendChild(grid);
+
+        /* Toggle expand/collapse on header click */
+        header.addEventListener('click', (function(h, g) {
+            return function(e) {
+                /* Don't toggle when clicking download links */
+                if (e.target.tagName === 'A') return;
+                h.classList.toggle('expanded');
+                g.classList.toggle('expanded');
+            };
+        })(header, grid));
     });
 }
 
