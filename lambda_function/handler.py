@@ -241,17 +241,16 @@ def render_template_string(template_str, context):
 # ---------------------------------------------------------------------------
 # CSV export
 # ---------------------------------------------------------------------------
-def generate_csv(images_meta, office_name, client_name, project_name, file_dt, type_str):
+def generate_csv(images_meta, output_prefix, type_str):
     """Generate CSV content as string with GPS and survey coordinate columns."""
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(["Filename", "Date Taken", "GPSLatitude", "GPSLongitude", "GPSAltitude",
                       "Northing", "Easting", "Elevation", "Hyperlink"])
-    domain_path = f"{DOMAIN_PREFIX}/{office_name}/{client_name}/{project_name}/{file_dt}"
     first_link = None
     for info in images_meta:
         base = info["base_name"].rsplit(".", 1)[0]
-        hyperlink = f"{DOMAIN_BASE}{domain_path}/{base}.htm"
+        hyperlink = f"{DOMAIN_BASE}/{output_prefix}{base}.htm"
         if first_link is None:
             first_link = hyperlink
         writer.writerow([base, info.get("date_time"), info.get("lat"), info.get("lon"), info.get("alt"),
@@ -260,17 +259,16 @@ def generate_csv(images_meta, office_name, client_name, project_name, file_dt, t
     return buf.getvalue(), first_link
 
 
-def generate_state_plane_csv(images_meta, office_name, client_name, project_name, file_dt, type_str):
+def generate_state_plane_csv(images_meta, output_prefix, type_str):
     """Generate CSV with State Plane coordinates (requires geo layer)."""
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(["Filename", "Date Taken", "ZoneName", "EPSG", "Easting", "Northing",
                       "Elevation_ft", "Hyperlink"])
-    domain_path = f"{DOMAIN_PREFIX}/{office_name}/{client_name}/{project_name}/{file_dt}"
     rows_written = 0
     for info in images_meta:
         base = info["base_name"].rsplit(".", 1)[0]
-        hyperlink = f"{DOMAIN_BASE}{domain_path}/{base}.htm"
+        hyperlink = f"{DOMAIN_BASE}/{output_prefix}{base}.htm"
 
         northing = info.get("northing")
         easting = info.get("easting")
@@ -461,8 +459,6 @@ def export_dxf(bucket, pano_meta, photo_meta, office_name, client_name, project_
         if proj_slug != "NoGPS":
             break
 
-    domain_path = f"{DOMAIN_PREFIX}/{office_name}/{client_name}/{project_name}/{file_dt}"
-
     def insert_blocks(meta_list, block_name, layer_name):
         for info in meta_list:
             northing = info.get("northing")
@@ -483,7 +479,7 @@ def export_dxf(bucket, pano_meta, photo_meta, office_name, client_name, project_
                     continue
 
             base = info["base_name"].rsplit(".", 1)[0]
-            hyperlink = f"{DOMAIN_BASE}{domain_path}/{base}.htm"
+            hyperlink = f"{DOMAIN_BASE}/{output_prefix}{base}.htm"
             block_ref = msp.add_blockref(block_name, (x, y, z), dxfattribs={
                 "layer": layer_name,
                 "xscale": block_scale,
@@ -722,12 +718,12 @@ def lambda_handler(event, context):
             first_link = None
             csv_keys = []
             if pano_meta:
-                csv_content, first_link = generate_csv(pano_meta, office_name, client_name, project_name, file_dt, "pano")
+                csv_content, first_link = generate_csv(pano_meta, output_prefix, "pano")
                 csv_key = f"{output_prefix}{file_dt}_{client_name}_{project_name}_pano_WGS84.csv"
                 s3.put_object(Bucket=bucket, Key=csv_key, Body=csv_content.encode("utf-8"), ContentType="text/csv")
                 csv_keys.append(csv_key)
             if photo_meta:
-                csv_content, link = generate_csv(photo_meta, office_name, client_name, project_name, file_dt, "photo")
+                csv_content, link = generate_csv(photo_meta, output_prefix, "photo")
                 csv_key = f"{output_prefix}{file_dt}_{client_name}_{project_name}_photo_WGS84.csv"
                 s3.put_object(Bucket=bucket, Key=csv_key, Body=csv_content.encode("utf-8"), ContentType="text/csv")
                 csv_keys.append(csv_key)
@@ -740,7 +736,7 @@ def lambda_handler(event, context):
                 for meta_list, type_str in [(pano_meta, "pano"), (photo_meta, "photo")]:
                     if not meta_list:
                         continue
-                    sp_content = generate_state_plane_csv(meta_list, office_name, client_name, project_name, file_dt, type_str)
+                    sp_content = generate_state_plane_csv(meta_list, output_prefix, type_str)
                     if sp_content:
                         sp_key = f"{output_prefix}{file_dt}_{client_name}_{project_name}_{type_str}_StatePlane.csv"
                         s3.put_object(Bucket=bucket, Key=sp_key, Body=sp_content.encode("utf-8"), ContentType="text/csv")
@@ -757,7 +753,7 @@ def lambda_handler(event, context):
             # Register office/client/project in the registry
             register_client_project(office_name, client_name, project_name)
 
-            landing_url = f"{DOMAIN_BASE}{DOMAIN_PREFIX}/{office_name}/{client_name}/{project_name}/index.html"
+            landing_url = f"{DOMAIN_BASE}/processed/{office_name}/{client_name}/{project_name}/index.html"
             write_status(job_prefix, "complete", "Processing finished", output_prefix, first_link or "", landing_url)
             logger.info("Job complete: %s", output_prefix)
 
