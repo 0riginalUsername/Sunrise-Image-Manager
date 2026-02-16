@@ -354,6 +354,8 @@ def send_email(project_name, client_name, office_name, dt_str, employee,
 
         download_links = "<br>".join(download_parts) if download_parts else '<span style="color:#6b7280;">No downloads for this batch</span>'
 
+        logo_url = f"{DOMAIN_BASE}/frontend/logo.jpg"
+
         html_content = render_template_string(template_str, {
             "OFFICE_NAME": office_name,
             "PROJECT_NAME": project_name,
@@ -362,6 +364,7 @@ def send_email(project_name, client_name, office_name, dt_str, employee,
             "EMPLOYEE": employee,
             "LANDING_URL": landing_url,
             "DOWNLOAD_LINKS": Markup(download_links),
+            "LOGO_URL": logo_url,
         })
         msg = EmailMessage()
         msg["Subject"] = f"Sunrise Engineering - Project Update: {project_name}"
