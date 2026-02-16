@@ -63,10 +63,24 @@ docker run --rm \
         find /out -type d -name 'test' -exec rm -rf {} + 2>/dev/null || true
         find /out -name '*.pyc' -delete 2>/dev/null || true
         find /out -name '*.pyi' -delete 2>/dev/null || true
-        # Strip debug symbols from native .so files
-        find /out -name '*.so' -exec strip --strip-debug {} + 2>/dev/null || true
-        find /out -name '*.so.*' -exec strip --strip-debug {} + 2>/dev/null || true
+        # Strip debug symbols from native .so files — but SKIP numpy and
+        # numpy.libs because strip corrupts numpy 2.x compiled extensions,
+        # causing 'should not import from source directory' errors at runtime.
+        find /out -name '*.so' -not -path '*/numpy/*' -not -path '*/numpy.libs/*' \
+            -exec strip --strip-debug {} + 2>/dev/null || true
+        find /out -name '*.so.*' -not -path '*/numpy/*' -not -path '*/numpy.libs/*' \
+            -exec strip --strip-debug {} + 2>/dev/null || true
         echo \">> Layer contents: \$(du -sh /out | cut -f1)\"
+        # Smoke-test: verify key packages can actually be imported
+        echo '>> Verifying layer imports...'
+        PYTHONPATH=/out python3 -c '
+import numpy; print(f\"   numpy {numpy.__version__} OK\")
+import pyproj; print(f\"   pyproj {pyproj.__version__} OK\")
+import shapely; print(f\"   shapely {shapely.__version__} OK\")
+import ezdxf; print(f\"   ezdxf {ezdxf.__version__} OK\")
+import shapefile; print(\"   pyshp OK\")
+print(\">> All imports verified.\")
+'
     "
 
 # Zip it up
