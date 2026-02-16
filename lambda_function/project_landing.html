@@ -450,7 +450,7 @@ async function loadApiConfig() {
 /* ── Init ── */
 async function init() {
     try {
-        var resp = await fetch('index.json');
+        var resp = await fetch('index.json', { cache: 'no-store' });
         if (!resp.ok) throw new Error('Failed to load');
         projectData = await resp.json();
 

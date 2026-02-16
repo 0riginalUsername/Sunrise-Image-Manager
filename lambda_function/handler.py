@@ -640,14 +640,15 @@ def update_project_index(bucket, office_name, client_name, project_name, file_dt
     index_data["batches"] = [b for b in index_data["batches"] if b["file_dt"] != file_dt]
     index_data["batches"].append(batch_entry)
 
-    # Write index.json
+    # Write index.json (no-cache so CloudFront serves fresh data after appends)
     s3.put_object(
         Bucket=bucket, Key=index_key,
         Body=json.dumps(index_data, indent=2).encode("utf-8"),
         ContentType="application/json",
+        CacheControl="no-cache, no-store, must-revalidate",
     )
 
-    # Deploy landing page HTML
+    # Deploy landing page HTML (no-cache so users always see latest batches)
     try:
         with open(LANDING_PAGE_FILE, "r") as f:
             landing_html = f.read()
@@ -655,6 +656,7 @@ def update_project_index(bucket, office_name, client_name, project_name, file_dt
             Bucket=bucket, Key=f"{project_prefix}index.html",
             Body=landing_html.encode("utf-8"),
             ContentType="text/html",
+            CacheControl="no-cache, no-store, must-revalidate",
         )
     except Exception as e:
         logger.warning("Failed to deploy landing page: %s", e)
