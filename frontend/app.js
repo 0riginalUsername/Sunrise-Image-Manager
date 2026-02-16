@@ -924,7 +924,8 @@ function renderProjectCards() {
     for (const [officeName, clients] of Object.entries(offices).sort()) {
         const clientMap = selectedClient ? { [selectedClient]: clients[selectedClient] || [] } : clients;
         for (const [clientName, projects] of Object.entries(clientMap || {}).sort()) {
-            for (const proj of (projects || [])) {
+            const sorted = [...(projects || [])].sort((a, b) => (b.last_upload || '').localeCompare(a.last_upload || ''));
+            for (const proj of sorted) {
                 if (selectedProject && proj.name !== selectedProject) continue;
 
                 const card = document.createElement('a');

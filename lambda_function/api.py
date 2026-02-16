@@ -504,5 +504,7 @@ def handle_project_index(event):
                     summary["last_employee"] = ""
                     summary["protected"] = False
                 result[off_name][cli_name].append(summary)
+            # Sort projects by last_upload descending (most recent first)
+            result[off_name][cli_name].sort(key=lambda p: p.get("last_upload", ""), reverse=True)
 
     return cors_response(200, {"projects": result})
