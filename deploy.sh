@@ -79,7 +79,7 @@ sam build --template template.yaml
 
 # Step 2: SAM deploy
 echo ">> Deploying CloudFormation stack..."
-PARAM_OVERRIDES="S3BucketName=$S3_BUCKET"
+PARAM_OVERRIDES="S3BucketName=$S3_BUCKET DomainPrefix=/processed"
 if [ -n "$GEO_LAYER_ARN" ]; then
     PARAM_OVERRIDES="$PARAM_OVERRIDES GeoLayerArn=$GEO_LAYER_ARN"
 fi

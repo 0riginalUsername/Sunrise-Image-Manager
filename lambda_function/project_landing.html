@@ -637,7 +637,9 @@ function renderGallery(filter) {
         var dateStr = batch.file_dt.replace(/_/g, ' ');
         var downloads = '';
         (batch.csv_files || []).forEach(function(f) {
-            var label = f.indexOf('pano') !== -1 ? 'Pano CSV' : 'Photo CSV';
+            var isPano = f.indexOf('pano') !== -1;
+            var isSP = f.indexOf('StatePlane') !== -1;
+            var label = (isPano ? 'Pano' : 'Photo') + (isSP ? ' SP CSV' : ' WGS84 CSV');
             downloads += '<a href="' + f + '" download>' + label + '</a>';
         });
         if (batch.dxf_file) {

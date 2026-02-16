@@ -62,7 +62,7 @@ Parameters:
   GeoLayerArn:
     Type: String
     Default: ""
-    Description: ARN of the geo Lambda Layer (pyproj, geopandas, ezdxf). Leave empty to skip DXF export.
+    Description: ARN of the geo Lambda Layer (pyproj, shapely, pyshp, ezdxf). Leave empty to skip DXF export.
 
 Conditions:
   HasGeoLayer: !Not [!Equals [!Ref GeoLayerArn, ""]]

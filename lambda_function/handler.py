@@ -40,8 +40,11 @@ try:
     from shapely.geometry import Point, shape
     from pyproj import Transformer
     HAS_GEO = True
-except ImportError:
+except ImportError as _geo_err:
     HAS_GEO = False
+    # Log at module level so we can diagnose layer attachment issues
+    import logging as _logging
+    _logging.getLogger().warning("Geo layer import failed: %s", _geo_err)
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -255,6 +258,41 @@ def generate_csv(images_meta, office_name, client_name, project_name, file_dt, t
                           info.get("northing", ""), info.get("easting", ""), info.get("csv_elevation", ""),
                           hyperlink])
     return buf.getvalue(), first_link
+
+
+def generate_state_plane_csv(images_meta, office_name, client_name, project_name, file_dt, type_str):
+    """Generate CSV with State Plane coordinates (requires geo layer)."""
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["Filename", "Date Taken", "ZoneName", "EPSG", "Easting", "Northing",
+                      "Elevation_ft", "Hyperlink"])
+    domain_path = f"{DOMAIN_PREFIX}/{office_name}/{client_name}/{project_name}/{file_dt}"
+    rows_written = 0
+    for info in images_meta:
+        base = info["base_name"].rsplit(".", 1)[0]
+        hyperlink = f"{DOMAIN_BASE}{domain_path}/{base}.htm"
+
+        northing = info.get("northing")
+        easting = info.get("easting")
+        csv_elev = info.get("csv_elevation")
+        if northing is not None and easting is not None:
+            # CSV survey coordinates — already in State Plane
+            writer.writerow([base, info.get("date_time"), "CSV", "", easting, northing,
+                              csv_elev or 0, hyperlink])
+            rows_written += 1
+        else:
+            lat, lon, alt = info.get("lat"), info.get("lon"), info.get("alt")
+            if lat is None or lon is None:
+                continue
+            try:
+                zone_name, epsg, x, y, z = latlon_to_state_plane(lat, lon, alt)
+                writer.writerow([base, info.get("date_time"), zone_name, epsg, x, y, z, hyperlink])
+                rows_written += 1
+            except Exception as e:
+                logger.warning("State Plane CSV: projection fail for %s: %s", base, e)
+    if rows_written == 0:
+        return None
+    return buf.getvalue()
 
 
 # ---------------------------------------------------------------------------
@@ -696,8 +734,17 @@ def lambda_handler(event, context):
                 if not first_link:
                     first_link = link
 
-            # Generate DXF (if geo layer is available)
+            # Generate DXF and State Plane CSVs (if geo layer is available)
             dxf_key = export_dxf(bucket, pano_meta, photo_meta, office_name, client_name, project_name, file_dt, output_prefix)
+            if HAS_GEO:
+                for meta_list, type_str in [(pano_meta, "pano"), (photo_meta, "photo")]:
+                    if not meta_list:
+                        continue
+                    sp_content = generate_state_plane_csv(meta_list, office_name, client_name, project_name, file_dt, type_str)
+                    if sp_content:
+                        sp_key = f"{output_prefix}{file_dt}_{client_name}_{project_name}_{type_str}_StatePlane.csv"
+                        s3.put_object(Bucket=bucket, Key=sp_key, Body=sp_content.encode("utf-8"), ContentType="text/csv")
+                        csv_keys.append(sp_key)
 
             # Update project landing page (appendable across batches)
             update_project_index(bucket, office_name, client_name, project_name, file_dt, employee_name,
