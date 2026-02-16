@@ -56,7 +56,7 @@ s3 = boto3.client("s3")
 # ---------------------------------------------------------------------------
 BUCKET = os.environ.get("S3_BUCKET", "sunrise-image-manager")
 DOMAIN_BASE = os.environ.get("DOMAIN_BASE", "https://pano.seihds.com")
-DOMAIN_PREFIX = os.environ.get("DOMAIN_PREFIX", "")
+DOMAIN_PREFIX = os.environ.get("DOMAIN_PREFIX", "/processed")
 MAX_WIDTH = int(os.environ.get("MAX_WIDTH", "8192"))
 DEFAULT_JPEG_QUALITY = int(os.environ.get("JPEG_QUALITY", "30"))
 PANO_ASPECT_RATIO = float(os.environ.get("PANO_ASPECT_RATIO", "1.9"))
