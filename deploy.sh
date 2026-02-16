@@ -20,6 +20,10 @@
 #   ./deploy.sh --geo-layer-arn arn:aws:...   # Deploy with explicit geo layer ARN
 #   ./deploy.sh --no-geo                     # Deploy without DXF export
 #   ./deploy.sh --cf-alias pano.seihds.com --acm-cert arn:aws:acm:...  # Custom domain
+#   ./deploy.sh --email-host smtp.office365.com --email-port 587 \
+#               --email-user noreply@example.com --email-pass SECRET \
+#               --email-sender noreply@example.com \
+#               --email-recipients "alice@example.com,bob@example.com"
 # ──────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -31,6 +35,12 @@ GEO_LAYER_ARN=""
 CF_ALIAS=""
 ACM_CERT=""
 NO_GEO=false
+EMAIL_HOST=""
+EMAIL_PORT="587"
+EMAIL_USER=""
+EMAIL_PASS=""
+EMAIL_SENDER=""
+EMAIL_RECIPIENTS=""
 
 # Parse args
 while [[ $# -gt 0 ]]; do
@@ -42,6 +52,12 @@ while [[ $# -gt 0 ]]; do
         --no-geo)        NO_GEO=true; shift ;;
         --cf-alias)      CF_ALIAS="$2"; shift 2 ;;
         --acm-cert)      ACM_CERT="$2"; shift 2 ;;
+        --email-host)    EMAIL_HOST="$2"; shift 2 ;;
+        --email-port)    EMAIL_PORT="$2"; shift 2 ;;
+        --email-user)    EMAIL_USER="$2"; shift 2 ;;
+        --email-pass)    EMAIL_PASS="$2"; shift 2 ;;
+        --email-sender)  EMAIL_SENDER="$2"; shift 2 ;;
+        --email-recipients) EMAIL_RECIPIENTS="$2"; shift 2 ;;
         *) echo "Unknown arg: $1"; exit 1 ;;
     esac
 done
@@ -70,6 +86,7 @@ echo "Bucket:     $S3_BUCKET"
 echo "Region:     $REGION"
 echo "Geo Layer:  ${GEO_LAYER_ARN:-<none — DXF export disabled>}"
 echo "CF Alias:   ${CF_ALIAS:-<none — using *.cloudfront.net>}"
+echo "Email SMTP: ${EMAIL_HOST:-<not configured>}"
 echo ""
 
 # Step 1: SAM build
@@ -85,6 +102,9 @@ if [ -n "$GEO_LAYER_ARN" ]; then
 fi
 if [ -n "$CF_ALIAS" ]; then
     PARAM_OVERRIDES="$PARAM_OVERRIDES CloudFrontAlias=$CF_ALIAS AcmCertificateArn=$ACM_CERT"
+fi
+if [ -n "$EMAIL_HOST" ]; then
+    PARAM_OVERRIDES="$PARAM_OVERRIDES EmailHost=$EMAIL_HOST EmailPort=$EMAIL_PORT EmailUser=$EMAIL_USER EmailPass=$EMAIL_PASS EmailSender=$EMAIL_SENDER EmailRecipients=$EMAIL_RECIPIENTS"
 fi
 
 set +e
