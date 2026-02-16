@@ -359,6 +359,30 @@ def handle_get_clients(event):
     return cors_response(200, {"clients": clients})
 
 
+def _sync_index_protected_flag(office, client, project, is_protected):
+    """Update the 'protected' flag in a project's index.json immediately."""
+    index_key = f"processed/{office}/{client}/{project}/index.json"
+    try:
+        obj = s3.get_object(Bucket=BUCKET, Key=index_key)
+        index_data = json.loads(obj["Body"].read().decode("utf-8"))
+    except Exception:
+        # Project index doesn't exist yet — nothing to update
+        return
+
+    if is_protected:
+        index_data["protected"] = True
+    else:
+        index_data.pop("protected", None)
+
+    s3.put_object(
+        Bucket=BUCKET, Key=index_key,
+        Body=json.dumps(index_data, indent=2).encode("utf-8"),
+        ContentType="application/json",
+        CacheControl="no-cache, no-store, must-revalidate",
+    )
+    logger.info("Synced protected=%s in index.json for %s/%s/%s", is_protected, office, client, project)
+
+
 def handle_manage_project_password(event):
     """
     Set, update, or remove a project password (requires Cognito auth).
@@ -400,6 +424,7 @@ def handle_manage_project_password(event):
     if action == "remove" or (not password and action != "check"):
         try:
             s3.delete_object(Bucket=BUCKET, Key=auth_key)
+            _sync_index_protected_flag(office, client, project, False)
             logger.info("Removed project password for %s/%s/%s", office, client, project)
             return cors_response(200, {"message": "Password removed", "protected": False})
         except Exception as e:
@@ -423,6 +448,7 @@ def handle_manage_project_password(event):
             Body=json.dumps({"hash": pw_hash, "salt": pw_salt}).encode("utf-8"),
             ContentType="application/json",
         )
+        _sync_index_protected_flag(office, client, project, True)
         logger.info("Set project password for %s/%s/%s", office, client, project)
         return cors_response(200, {"message": "Password set", "protected": True})
     except Exception as e:
