@@ -55,7 +55,7 @@ docker run --rm \
             ezdxf \
             -t /out \
             --no-cache-dir \
-            --prefer-binary
+            --only-binary :all:
         # Remove unnecessary files to shrink the layer
         echo '>> Cleaning up layer to reduce size...'
         find /out -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true
@@ -63,7 +63,6 @@ docker run --rm \
         find /out -type d -name 'test' -exec rm -rf {} + 2>/dev/null || true
         find /out -name '*.pyc' -delete 2>/dev/null || true
         find /out -name '*.pyi' -delete 2>/dev/null || true
-        find /out -name '*.dist-info' -type d -exec rm -rf {} + 2>/dev/null || true
         # Strip debug symbols from native .so files
         find /out -name '*.so' -exec strip --strip-debug {} + 2>/dev/null || true
         find /out -name '*.so.*' -exec strip --strip-debug {} + 2>/dev/null || true
