@@ -154,7 +154,8 @@ Resources:
         CorsRules:
           - AllowedHeaders: ["*"]
             AllowedMethods: [GET, PUT, POST, HEAD]
-            AllowedOrigins: ["*"]
+            AllowedOrigins:
+              - !Ref AllowedOrigin
             MaxAge: 3600
 
   # ── CloudFront (serves frontend and processed content from private S3 bucket) ──
@@ -223,6 +224,11 @@ Resources:
     Type: AWS::Serverless::Api
     Properties:
       StageName: prod
+      MethodSettings:
+        - HttpMethod: POST
+          ResourcePath: /api/project-auth
+          ThrottlingBurstLimit: 5
+          ThrottlingRateLimit: 2
       Cors:
         AllowMethods: "'GET,POST,OPTIONS'"
         AllowHeaders: "'Content-Type,Authorization'"
@@ -249,8 +255,20 @@ Resources:
           CLIENTS_KEY: state/clients.json
           DOMAIN_BASE: !Ref DomainBase
       Policies:
-        - S3CrudPolicy:
-            BucketName: !Ref S3BucketName
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action: [s3:GetObject, s3:PutObject]
+              Resource:
+                - !Sub "arn:aws:s3:::${S3BucketName}/uploads/*"
+            - Effect: Allow
+              Action: [s3:GetObject, s3:PutObject, s3:DeleteObject]
+              Resource:
+                - !Sub "arn:aws:s3:::${S3BucketName}/state/*"
+            - Effect: Allow
+              Action: s3:GetObject
+              Resource:
+                - !Sub "arn:aws:s3:::${S3BucketName}/processed/*"
       Events:
         CreateJob:
           Type: Api
@@ -396,8 +414,24 @@ Resources:
           SHAPEFILE_PREFIX: templates/NAD83SPCEPSG
           CLIENTS_KEY: state/clients.json
       Policies:
-        - S3CrudPolicy:
-            BucketName: !Ref S3BucketName
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action: [s3:GetObject, s3:PutObject]
+              Resource:
+                - !Sub "arn:aws:s3:::${S3BucketName}/uploads/*"
+            - Effect: Allow
+              Action: [s3:GetObject, s3:PutObject]
+              Resource:
+                - !Sub "arn:aws:s3:::${S3BucketName}/processed/*"
+            - Effect: Allow
+              Action: [s3:GetObject, s3:PutObject]
+              Resource:
+                - !Sub "arn:aws:s3:::${S3BucketName}/state/*"
+            - Effect: Allow
+              Action: s3:GetObject
+              Resource:
+                - !Sub "arn:aws:s3:::${S3BucketName}/templates/*"
       Events:
         ManifestUpload:
           Type: S3

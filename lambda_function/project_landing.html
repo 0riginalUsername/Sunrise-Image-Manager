@@ -526,6 +526,12 @@ async function verifyProjectPassword() {
     }
 }
 
+function escapeHtml(str) {
+    var d = document.createElement('div');
+    d.textContent = str;
+    return d.innerHTML;
+}
+
 /* ── Load project content (after auth check passes) ── */
 function loadContent() {
     projectData.batches.forEach(function(batch) {
@@ -624,10 +630,10 @@ function renderMap() {
             })(img));
         } else {
             var popup = '<div style="text-align:center;min-width:180px;">'
-                + '<img src="' + img.src + '" style="width:180px;height:auto;border-radius:4px;margin-bottom:6px;" loading="lazy" />'
-                + '<div style="font-weight:600;font-size:13px;">' + img.filename.replace('.jpg', '') + '</div>'
-                + '<div style="font-size:11px;color:#666;">' + (img.date_time || '') + '</div>'
-                + '<a href="' + img.viewer + '" target="_blank" style="display:inline-block;margin-top:6px;padding:4px 12px;background:#113e59;color:white;border-radius:4px;font-size:12px;text-decoration:none;">View Photo</a>'
+                + '<img src="' + encodeURI(img.src) + '" style="width:180px;height:auto;border-radius:4px;margin-bottom:6px;" loading="lazy" />'
+                + '<div style="font-weight:600;font-size:13px;">' + escapeHtml(img.filename.replace('.jpg', '')) + '</div>'
+                + '<div style="font-size:11px;color:#666;">' + escapeHtml(img.date_time || '') + '</div>'
+                + '<a href="' + encodeURI(img.viewer) + '" target="_blank" style="display:inline-block;margin-top:6px;padding:4px 12px;background:#113e59;color:white;border-radius:4px;font-size:12px;text-decoration:none;">View Photo</a>'
                 + '</div>';
             marker.bindPopup(popup, { maxWidth: 220 });
         }

@@ -29,7 +29,7 @@ from pathlib import Path
 import boto3
 import piexif
 from PIL import Image, ExifTags
-from jinja2 import Environment, BaseLoader
+from jinja2 import Environment, BaseLoader, Markup
 
 # Optional geo/DXF dependencies — provided by the geo Lambda Layer.
 # If the layer is not attached, DXF export is gracefully skipped.
@@ -234,7 +234,7 @@ def load_template_from_s3(template_key):
 
 
 def render_template_string(template_str, context):
-    env = Environment(loader=BaseLoader())
+    env = Environment(loader=BaseLoader(), autoescape=True)
     tmpl = env.from_string(template_str)
     return tmpl.render(**context)
 
@@ -361,7 +361,7 @@ def send_email(project_name, client_name, office_name, dt_str, employee,
             "UPLOAD_TIME": dt_str,
             "EMPLOYEE": employee,
             "LANDING_URL": landing_url,
-            "DOWNLOAD_LINKS": download_links,
+            "DOWNLOAD_LINKS": Markup(download_links),
         })
         msg = EmailMessage()
         msg["Subject"] = f"Sunrise Engineering - Project Update: {project_name}"
@@ -702,6 +702,14 @@ def lambda_handler(event, context):
         project_name = manifest["project_name"]
         employee_name = manifest["employee_name"]
         file_dt = manifest["file_dt"]
+
+        # Validate path components (defense-in-depth — API already validates)
+        safe_name_re = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_\-\.]{0,127}$')
+        for name, label in [(office_name, "office_name"), (client_name, "client_name"),
+                            (project_name, "project_name"), (file_dt, "file_dt")]:
+            if not safe_name_re.match(name):
+                raise ValueError(f"Invalid {label}: {name!r}")
+
         pano_keys = list(manifest.get("pano_keys", []))
         photo_keys = list(manifest.get("photo_keys", []))
         image_keys = manifest.get("image_keys", [])

@@ -10,6 +10,7 @@ Provides HTTP endpoints via API Gateway for the web frontend:
 """
 
 import os
+import re
 import json
 import uuid
 import hashlib
@@ -18,6 +19,9 @@ import logging
 from datetime import datetime
 
 import boto3
+
+# Strict pattern for path components — prevents path traversal and XSS via S3 keys
+SAFE_NAME_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_\-\.]{0,127}$')
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -129,6 +133,10 @@ def handle_create_job(event):
     if not office_name or not client_name or not project_name or not employee_name:
         return cors_response(400, {"error": "office_name, client_name, project_name, and employee_name are required"})
 
+    for name, label in [(office_name, "office_name"), (client_name, "client_name"), (project_name, "project_name")]:
+        if not SAFE_NAME_RE.match(name):
+            return cors_response(400, {"error": f"Invalid {label}: only letters, numbers, hyphens, underscores, and dots are allowed"})
+
     if not pano_files and not photo_files and not image_files:
         return cors_response(400, {"error": "At least one image file is required"})
 
@@ -139,6 +147,8 @@ def handle_create_job(event):
         uploads = []
         for fname in filenames:
             safe_name = fname.replace(" ", "_")
+            if not SAFE_NAME_RE.match(safe_name):
+                continue  # skip files with dangerous characters
             key = f"{job_prefix}raw/{subdir}/{safe_name}"
             url = s3.generate_presigned_url(
                 "put_object",
@@ -195,12 +205,22 @@ def handle_submit_job(event):
     if not job_prefix:
         return cors_response(400, {"error": "job_prefix is required"})
 
+    # Validate that all submitted S3 keys belong to this job
+    expected_prefix = job_prefix + "raw/"
+    all_keys = body.get("pano_keys", []) + body.get("photo_keys", []) + body.get("image_keys", [])
+    for key in all_keys:
+        if not key.startswith(expected_prefix) or ".." in key:
+            return cors_response(400, {"error": f"Invalid key: must start with {expected_prefix}"})
+
     # Store project password if provided (hash it, don't put plaintext in manifest)
     project_password = body.get("project_password", "").strip()
     if project_password:
         office_name_safe = body.get("office_name", "").strip().replace(" ", "_")
         client_name_safe = body.get("client_name", "").strip().replace(" ", "_")
         project_name_safe = body.get("project_name", "").strip().replace(" ", "_")
+        for name in [office_name_safe, client_name_safe, project_name_safe]:
+            if not SAFE_NAME_RE.match(name):
+                return cors_response(400, {"error": "Invalid name in password storage path"})
         pw_hash, pw_salt = hash_password(project_password)
         auth_key = f"state/project-auth/{office_name_safe}/{client_name_safe}/{project_name_safe}.json"
         s3.put_object(
@@ -324,6 +344,9 @@ def handle_manage_project_password(event):
 
     if not office or not client or not project:
         return cors_response(400, {"error": "office, client, and project are required"})
+    for name, label in [(office, "office"), (client, "client"), (project, "project")]:
+        if not SAFE_NAME_RE.match(name):
+            return cors_response(400, {"error": f"Invalid {label}"})
 
     auth_key = f"state/project-auth/{office}/{client}/{project}.json"
 
@@ -374,6 +397,9 @@ def handle_project_auth_check(event):
     project = params.get("project", "").strip().replace(" ", "_")
     if not office or not client or not project:
         return cors_response(400, {"error": "office, client, and project query parameters are required"})
+    for name in [office, client, project]:
+        if not SAFE_NAME_RE.match(name):
+            return cors_response(400, {"error": "Invalid parameter"})
 
     auth_key = f"state/project-auth/{office}/{client}/{project}.json"
     try:
@@ -405,6 +431,9 @@ def handle_project_auth_verify(event):
 
     if not office or not client or not project or not password:
         return cors_response(400, {"error": "office, client, project, and password are required"})
+    for name in [office, client, project]:
+        if not SAFE_NAME_RE.match(name):
+            return cors_response(400, {"error": "Invalid parameter"})
 
     auth_key = f"state/project-auth/{office}/{client}/{project}.json"
     try:

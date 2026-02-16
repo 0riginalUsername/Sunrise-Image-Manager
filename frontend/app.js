@@ -11,6 +11,13 @@
  *  7. Polls for job completion status
  */
 
+// ── Utilities ─────────────────────────────────────────────────────────────
+function escapeHtml(str) {
+    const d = document.createElement('div');
+    d.textContent = str;
+    return d.innerHTML;
+}
+
 // ── Configuration ──────────────────────────────────────────────────────────
 const API_BASE = window.SIM_CONFIG?.apiBase || '/api';
 const PANO_ASPECT_RATIO = 1.9;  // width/height >= this => panoramic
@@ -938,14 +945,14 @@ function renderProjectCards() {
                     : '';
 
                 card.innerHTML = `
-                    <h3>${proj.name.replace(/_/g, ' ')}${proj.protected ? '<span class="pw-icon" title="Password protected">&#x1F512;</span>' : ''}</h3>
-                    <div class="project-client">${officeName.replace(/_/g, ' ')} / ${clientName.replace(/_/g, ' ')}</div>
+                    <h3>${escapeHtml(proj.name.replace(/_/g, ' '))}${proj.protected ? '<span class="pw-icon" title="Password protected">&#x1F512;</span>' : ''}</h3>
+                    <div class="project-client">${escapeHtml(officeName.replace(/_/g, ' '))} / ${escapeHtml(clientName.replace(/_/g, ' '))}</div>
                     <div class="project-stats">
-                        <span class="stat"><span class="stat-label">Batches:</span> ${proj.batch_count || 0}</span>
-                        <span class="stat"><span class="stat-label">Pano:</span> ${proj.pano_count || 0}</span>
-                        <span class="stat"><span class="stat-label">Photo:</span> ${proj.photo_count || 0}</span>
+                        <span class="stat"><span class="stat-label">Batches:</span> ${parseInt(proj.batch_count) || 0}</span>
+                        <span class="stat"><span class="stat-label">Pano:</span> ${parseInt(proj.pano_count) || 0}</span>
+                        <span class="stat"><span class="stat-label">Photo:</span> ${parseInt(proj.photo_count) || 0}</span>
                     </div>
-                    ${lastUpload ? `<div class="project-meta">Last upload: ${lastUpload}${proj.last_employee ? ' by ' + proj.last_employee : ''}</div>` : ''}
+                    ${lastUpload ? `<div class="project-meta">Last upload: ${escapeHtml(lastUpload)}${proj.last_employee ? ' by ' + escapeHtml(proj.last_employee) : ''}</div>` : ''}
                 `;
                 projectGrid.appendChild(card);
                 count++;
