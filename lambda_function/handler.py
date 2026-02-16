@@ -322,8 +322,9 @@ def parse_position_csv(csv_text):
 # ---------------------------------------------------------------------------
 # Email notification
 # ---------------------------------------------------------------------------
-def send_email(project_name, client_name, office_name, dt_str, employee, first_link,
-               s3_output_prefix, submitter_email=""):
+def send_email(project_name, client_name, office_name, dt_str, employee,
+               office_name_raw, output_prefix, csv_keys=None, dxf_key=None,
+               submitter_email=""):
     """Send HTML email notification via SMTP."""
     # Build recipient list: configured recipients + the submitter
     all_recipients = list(RECIPIENTS)
@@ -335,14 +336,32 @@ def send_email(project_name, client_name, office_name, dt_str, employee, first_l
         return
     try:
         template_str = load_template_from_s3(EMAIL_TEMPLATE_KEY)
+
+        # Landing page URL
+        landing_url = f"{DOMAIN_BASE}/processed/{office_name_raw}/{client_name}/{project_name}/index.html"
+
+        # Build download links HTML
+        link_style = "color:#98805b;text-decoration:underline;"
+        download_parts = []
+        for csv_key in (csv_keys or []):
+            label = csv_key.rsplit("/", 1)[-1]
+            url = f"{DOMAIN_BASE}/{csv_key}"
+            download_parts.append(f'<a href="{url}" style="{link_style}">{label}</a>')
+        if dxf_key:
+            label = dxf_key.rsplit("/", 1)[-1]
+            url = f"{DOMAIN_BASE}/{dxf_key}"
+            download_parts.append(f'<a href="{url}" style="{link_style}">{label}</a>')
+
+        download_links = "<br>".join(download_parts) if download_parts else '<span style="color:#6b7280;">No downloads for this batch</span>'
+
         html_content = render_template_string(template_str, {
             "OFFICE_NAME": office_name,
             "PROJECT_NAME": project_name,
             "CLIENT_NAME": client_name,
             "UPLOAD_TIME": dt_str,
             "EMPLOYEE": employee,
-            "PANO_LINK": first_link or "",
-            "DIRECTORY_PATH": f"s3://{BUCKET}/{s3_output_prefix}",
+            "LANDING_URL": landing_url,
+            "DOWNLOAD_LINKS": download_links,
         })
         msg = EmailMessage()
         msg["Subject"] = f"Sunrise Engineering - Project Update: {project_name}"
@@ -770,7 +789,8 @@ def lambda_handler(event, context):
 
             # Send email (include submitter)
             send_email(project_name, client_name, office_name, file_dt, employee_name,
-                       first_link, output_prefix, submitter_email=submitter_email)
+                       office_name, output_prefix, csv_keys=csv_keys, dxf_key=dxf_key,
+                       submitter_email=submitter_email)
 
             # Register office/client/project in the registry
             register_client_project(office_name, client_name, project_name)
