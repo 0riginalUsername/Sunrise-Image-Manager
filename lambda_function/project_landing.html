@@ -8,6 +8,7 @@
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
     <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/pannellum@2.5.6/build/pannellum.css" />
     <style>
         :root {
             --navy: #113e59;
@@ -181,6 +182,12 @@
             max-width: 90vw;
             max-height: 80vh;
             border-radius: 4px;
+        }
+        #lightboxPano {
+            width: 90vw;
+            height: 75vh;
+            border-radius: 4px;
+            display: none;
         }
         .lightbox-close {
             position: absolute;
@@ -387,6 +394,7 @@
         <button class="lightbox-close" onclick="closeLightbox()">&times;</button>
         <button class="lightbox-nav lightbox-prev" onclick="navLightbox(-1)">&lsaquo;</button>
         <img id="lightboxImg" alt="" />
+        <div id="lightboxPano"></div>
         <button class="lightbox-nav lightbox-next" onclick="navLightbox(1)">&rsaquo;</button>
         <div class="lightbox-info">
             <span id="lightboxName"></span>
@@ -403,6 +411,7 @@
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/pannellum@2.5.6/build/pannellum.js"></script>
 <script>
 /* ── State ── */
 let projectData = null;
@@ -690,6 +699,7 @@ function openLightbox(idx) {
 }
 
 function closeLightbox() {
+    destroyPanoViewer();
     document.getElementById('lightbox').classList.remove('open');
     currentIdx = -1;
 }
@@ -702,15 +712,45 @@ function navLightbox(dir) {
     }
 }
 
+var panoViewer = null;
+
+function destroyPanoViewer() {
+    if (panoViewer) {
+        try { panoViewer.destroy(); } catch(e) {}
+        panoViewer = null;
+    }
+}
+
 function updateLightbox() {
     var img = filteredImages[currentIdx];
     if (!img) return;
-    document.getElementById('lightboxImg').src = img.src;
+
+    var flatImg = document.getElementById('lightboxImg');
+    var panoEl = document.getElementById('lightboxPano');
+
+    destroyPanoViewer();
+
+    if (img.type === 'pano') {
+        flatImg.style.display = 'none';
+        panoEl.style.display = 'block';
+        panoViewer = pannellum.viewer('lightboxPano', {
+            type: 'equirectangular',
+            panorama: img.src,
+            autoLoad: true,
+            hfov: 120,
+            compass: false
+        });
+    } else {
+        panoEl.style.display = 'none';
+        flatImg.style.display = 'block';
+        flatImg.src = img.src;
+    }
+
     document.getElementById('lightboxName').textContent = img.filename.replace('.jpg', '');
     document.getElementById('lightboxDate').textContent = img.date_time || '';
     var viewerLink = document.getElementById('lightboxViewer');
     viewerLink.href = img.viewer;
-    viewerLink.textContent = img.type === 'pano' ? 'Open 360\u00b0 Viewer \u2192' : 'Open Viewer \u2192';
+    viewerLink.textContent = img.type === 'pano' ? 'Open Full Viewer \u2192' : 'Open Viewer \u2192';
 }
 
 /* Keyboard navigation */
