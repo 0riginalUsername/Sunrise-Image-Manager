@@ -15,9 +15,10 @@
 #     see: layers/geo/build_layer.sh --publish
 #
 # Usage:
-#   ./deploy.sh                              # Deploy with defaults
+#   ./deploy.sh                              # Deploy (auto-detects geo layer)
 #   ./deploy.sh --bucket my-bucket-name      # Deploy with custom bucket
-#   ./deploy.sh --geo-layer-arn arn:aws:...   # Deploy with DXF export enabled
+#   ./deploy.sh --geo-layer-arn arn:aws:...   # Deploy with explicit geo layer ARN
+#   ./deploy.sh --no-geo                     # Deploy without DXF export
 #   ./deploy.sh --cf-alias pano.seihds.com --acm-cert arn:aws:acm:...  # Custom domain
 # ──────────────────────────────────────────────────────────────────────────
 set -euo pipefail
@@ -29,6 +30,7 @@ REGION="${AWS_DEFAULT_REGION:-us-east-1}"
 GEO_LAYER_ARN=""
 CF_ALIAS=""
 ACM_CERT=""
+NO_GEO=false
 
 # Parse args
 while [[ $# -gt 0 ]]; do
@@ -37,12 +39,31 @@ while [[ $# -gt 0 ]]; do
         --stack)         STACK_NAME="$2"; shift 2 ;;
         --region)        REGION="$2"; shift 2 ;;
         --geo-layer-arn) GEO_LAYER_ARN="$2"; shift 2 ;;
+        --no-geo)        NO_GEO=true; shift ;;
         --cf-alias)      CF_ALIAS="$2"; shift 2 ;;
         --acm-cert)      ACM_CERT="$2"; shift 2 ;;
         *) echo "Unknown arg: $1"; exit 1 ;;
     esac
 done
 
+# Auto-detect the latest published geo layer if not specified
+if [ -z "$GEO_LAYER_ARN" ] && [ "$NO_GEO" = false ]; then
+    echo ">> No --geo-layer-arn provided, checking for published layer..."
+    DETECTED_ARN=$(aws lambda list-layer-versions \
+        --layer-name "sunrise-geo-layer" \
+        --region "$REGION" \
+        --query 'LayerVersions[0].LayerVersionArn' \
+        --output text 2>/dev/null || true)
+    if [ -n "$DETECTED_ARN" ] && [ "$DETECTED_ARN" != "None" ]; then
+        GEO_LAYER_ARN="$DETECTED_ARN"
+        echo "   Found: $GEO_LAYER_ARN"
+    else
+        echo "   No published geo layer found. DXF export will be disabled."
+        echo "   To enable, run: layers/geo/build_layer.sh --publish"
+    fi
+fi
+
+echo ""
 echo "=== Sunrise Image Manager Deployment ==="
 echo "Stack:      $STACK_NAME"
 echo "Bucket:     $S3_BUCKET"
