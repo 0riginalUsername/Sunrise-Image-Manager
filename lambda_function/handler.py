@@ -37,7 +37,7 @@ try:
     import ezdxf
     from ezdxf.addons import Importer
     import shapefile  # pyshp — lightweight shapefile reader
-    from shapely.geometry import Point, shape
+    from shapely.geometry import Point, Polygon, shape
     from pyproj import Transformer
     HAS_GEO = True
 except Exception as _geo_err:
@@ -385,6 +385,15 @@ def meters_to_feet(meters):
     return meters * (3937 / 1200)
 
 
+def _shape_to_polygon(s):
+    """Convert a pyshp shape to a Shapely Polygon, handling MULTIPATCH (type 31)."""
+    if s.shapeType == 31:  # MULTIPATCH – build polygon from raw points/parts
+        parts = list(s.parts) + [len(s.points)]
+        rings = [s.points[parts[i]:parts[i + 1]] for i in range(len(parts) - 1)]
+        return Polygon(rings[0], rings[1:])
+    return shape(s.__geo_interface__)
+
+
 def latlon_to_state_plane(lat, lon, alt=None):
     """Convert WGS84 lat/lon to State Plane coordinates using the NAD83 shapefile."""
     shp_path = _download_shapefile()
@@ -393,9 +402,9 @@ def latlon_to_state_plane(lat, lon, alt=None):
     fields = [f[0] for f in reader.fields[1:]]  # skip DeletionFlag
     for sr in reader.iterShapeRecords():
         try:
-            geom = shape(sr.shape.__geo_interface__)
+            geom = _shape_to_polygon(sr.shape)
         except Exception:
-            continue  # skip unsupported geometry types (e.g. MULTIPATCH)
+            continue
         if geom.contains(pt):
             rec = dict(zip(fields, sr.record))
             epsg = int(rec["EPSG"])
