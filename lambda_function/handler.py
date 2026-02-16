@@ -29,7 +29,8 @@ from pathlib import Path
 import boto3
 import piexif
 from PIL import Image, ExifTags
-from jinja2 import Environment, BaseLoader, Markup
+from jinja2 import Environment, BaseLoader
+from markupsafe import Markup
 
 # Optional geo/DXF dependencies — provided by the geo Lambda Layer.
 # If the layer is not attached, DXF export is gracefully skipped.
