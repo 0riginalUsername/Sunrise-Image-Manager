@@ -2,12 +2,12 @@ AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
 Description: >
   Sunrise Image Manager - Fully web-based panoramic image processing.
-  Frontend hosted on S3, API via API Gateway + Lambda, image processing via Lambda.
+  Frontend served via CloudFront + S3, API via API Gateway + Lambda, image processing via Lambda.
 
 Globals:
   Function:
     Timeout: 900
-    MemorySize: 3008
+    MemorySize: 10240
     Runtime: python3.11
 
 Parameters:
@@ -15,12 +15,20 @@ Parameters:
     Type: String
     Default: sunrise-image-manager
     Description: S3 bucket for uploads, processed output, and static website
+  CloudFrontAlias:
+    Type: String
+    Default: ""
+    Description: Custom domain name for CloudFront (e.g., pano.seihds.com). Requires AcmCertificateArn.
+  AcmCertificateArn:
+    Type: String
+    Default: ""
+    Description: ACM certificate ARN (must be in us-east-1) for the custom domain
   DomainBase:
     Type: String
     Default: https://pano.seihds.com
   DomainPrefix:
     Type: String
-    Default: ""
+    Default: "/processed"
   MaxWidth:
     Type: Number
     Default: 8192
@@ -51,17 +59,53 @@ Parameters:
     Type: String
     Default: "https://pano.seihds.com"
     Description: CORS allowed origin for the API (set to your domain in production)
+  AllowedSignUpDomain:
+    Type: String
+    Default: ""
+    Description: If set, only emails from this domain can sign up (e.g., seihds.com)
   GeoLayerArn:
     Type: String
     Default: ""
-    Description: ARN of the geo Lambda Layer (pyproj, geopandas, ezdxf). Leave empty to skip DXF export.
+    Description: ARN of the geo Lambda Layer (pyproj, shapely, pyshp, ezdxf). Leave empty to skip DXF export.
 
 Conditions:
   HasGeoLayer: !Not [!Equals [!Ref GeoLayerArn, ""]]
+  HasCustomDomain: !Not [!Equals [!Ref CloudFrontAlias, ""]]
+  HasSignUpDomainFilter: !Not [!Equals [!Ref AllowedSignUpDomain, ""]]
 
 Resources:
 
   # ── Cognito User Pool (email/password authentication for upload page) ──
+  # ── Pre Sign-Up trigger: restrict sign-ups to a single email domain ──
+  PreSignUpFunction:
+    Type: AWS::Serverless::Function
+    Condition: HasSignUpDomainFilter
+    Properties:
+      Handler: index.handler
+      Runtime: python3.11
+      Timeout: 5
+      MemorySize: 128
+      InlineCode: |
+        import os
+        def handler(event, context):
+            domain = os.environ["ALLOWED_DOMAIN"].lower()
+            email = event["request"]["userAttributes"].get("email", "")
+            if not email.lower().endswith("@" + domain):
+                raise Exception(f"Sign-up restricted to @{domain} addresses.")
+            return event
+      Environment:
+        Variables:
+          ALLOWED_DOMAIN: !Ref AllowedSignUpDomain
+
+  PreSignUpInvokePermission:
+    Type: AWS::Lambda::Permission
+    Condition: HasSignUpDomainFilter
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt PreSignUpFunction.Arn
+      Principal: cognito-idp.amazonaws.com
+      SourceArn: !GetAtt CognitoUserPool.Arn
+
   CognitoUserPool:
     Type: AWS::Cognito::UserPool
     Properties:
@@ -70,6 +114,10 @@ Resources:
         - email
       AutoVerifiedAttributes:
         - email
+      LambdaConfig: !If
+        - HasSignUpDomainFilter
+        - PreSignUp: !GetAtt PreSignUpFunction.Arn
+        - !Ref "AWS::NoValue"
       Policies:
         PasswordPolicy:
           MinimumLength: 8
@@ -97,19 +145,61 @@ Resources:
   # ── S3 Bucket (uploads, processed output, static frontend) ──
   ImageBucket:
     Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       BucketName: !Ref S3BucketName
-      WebsiteConfiguration:
-        IndexDocument: index.html
-        ErrorDocument: index.html
+      # No WebsiteConfiguration — content is served via CloudFront
       CorsConfiguration:
         CorsRules:
           - AllowedHeaders: ["*"]
             AllowedMethods: [GET, PUT, POST, HEAD]
-            AllowedOrigins: ["*"]
+            AllowedOrigins:
+              - !Ref AllowedOrigin
             MaxAge: 3600
 
-  # Public read policy for the frontend/ and processed/ prefixes
+  # ── CloudFront (serves frontend and processed content from private S3 bucket) ──
+  CloudFrontOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${AWS::StackName}-oac"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        DefaultRootObject: frontend/index.html
+        Comment: !Sub "${AWS::StackName} - Sunrise Image Manager"
+        Aliases: !If
+          - HasCustomDomain
+          - [!Ref CloudFrontAlias]
+          - !Ref "AWS::NoValue"
+        ViewerCertificate: !If
+          - HasCustomDomain
+          - AcmCertificateArn: !Ref AcmCertificateArn
+            SslSupportMethod: sni-only
+            MinimumProtocolVersion: TLSv1.2_2021
+          - CloudFrontDefaultCertificate: true
+        Origins:
+          - Id: S3Origin
+            DomainName: !GetAtt ImageBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt CloudFrontOAC.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachedMethods: [GET, HEAD]
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6  # Managed-CachingOptimized
+          Compress: true
+
+  # Bucket policy: Only CloudFront can read frontend/ and processed/ prefixes
   BucketPolicy:
     Type: AWS::S3::BucketPolicy
     Properties:
@@ -117,19 +207,28 @@ Resources:
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
-          - Sid: PublicReadFrontend
+          - Sid: AllowCloudFrontRead
             Effect: Allow
-            Principal: "*"
+            Principal:
+              Service: cloudfront.amazonaws.com
             Action: s3:GetObject
             Resource:
               - !Sub "arn:aws:s3:::${S3BucketName}/frontend/*"
               - !Sub "arn:aws:s3:::${S3BucketName}/processed/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${CloudFrontDistribution}"
 
   # ── API Gateway ──
   ApiGateway:
     Type: AWS::Serverless::Api
     Properties:
       StageName: prod
+      MethodSettings:
+        - HttpMethod: POST
+          ResourcePath: /api/project-auth
+          ThrottlingBurstLimit: 5
+          ThrottlingRateLimit: 2
       Cors:
         AllowMethods: "'GET,POST,OPTIONS'"
         AllowHeaders: "'Content-Type,Authorization'"
@@ -154,9 +253,26 @@ Resources:
           PRESIGN_EXPIRY: "3600"
           ALLOWED_ORIGIN: !Ref AllowedOrigin
           CLIENTS_KEY: state/clients.json
+          DOMAIN_BASE: !Ref DomainBase
       Policies:
-        - S3CrudPolicy:
-            BucketName: !Ref S3BucketName
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action: s3:ListBucket
+              Resource:
+                - !Sub "arn:aws:s3:::${S3BucketName}"
+            - Effect: Allow
+              Action: [s3:GetObject, s3:PutObject]
+              Resource:
+                - !Sub "arn:aws:s3:::${S3BucketName}/uploads/*"
+            - Effect: Allow
+              Action: [s3:GetObject, s3:PutObject, s3:DeleteObject]
+              Resource:
+                - !Sub "arn:aws:s3:::${S3BucketName}/state/*"
+            - Effect: Allow
+              Action: [s3:GetObject, s3:PutObject]
+              Resource:
+                - !Sub "arn:aws:s3:::${S3BucketName}/processed/*"
       Events:
         CreateJob:
           Type: Api
@@ -181,6 +297,13 @@ Resources:
           Properties:
             RestApiId: !Ref ApiGateway
             Path: /api/clients
+            Method: GET
+        # Project index (browse projects view — Cognito auth required)
+        ProjectIndex:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /api/project-index
             Method: GET
         # Project password management (Cognito auth required — team only)
         ManageProjectPassword:
@@ -239,6 +362,14 @@ Resources:
             Method: OPTIONS
             Auth:
               Authorizer: NONE
+        CorsProjectIndex:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /api/project-index
+            Method: OPTIONS
+            Auth:
+              Authorizer: NONE
         CorsProjectPassword:
           Type: Api
           Properties:
@@ -252,6 +383,23 @@ Resources:
           Properties:
             RestApiId: !Ref ApiGateway
             Path: /api/project-auth
+            Method: OPTIONS
+            Auth:
+              Authorizer: NONE
+        # Plan alignment save (no Cognito auth — called from landing pages)
+        SavePlanTransform:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /api/save-plan-transform
+            Method: POST
+            Auth:
+              Authorizer: NONE
+        CorsSavePlanTransform:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /api/save-plan-transform
             Method: OPTIONS
             Auth:
               Authorizer: NONE
@@ -287,8 +435,24 @@ Resources:
           SHAPEFILE_PREFIX: templates/NAD83SPCEPSG
           CLIENTS_KEY: state/clients.json
       Policies:
-        - S3CrudPolicy:
-            BucketName: !Ref S3BucketName
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action: [s3:GetObject, s3:PutObject]
+              Resource:
+                - !Sub "arn:aws:s3:::${S3BucketName}/uploads/*"
+            - Effect: Allow
+              Action: [s3:GetObject, s3:PutObject]
+              Resource:
+                - !Sub "arn:aws:s3:::${S3BucketName}/processed/*"
+            - Effect: Allow
+              Action: [s3:GetObject, s3:PutObject]
+              Resource:
+                - !Sub "arn:aws:s3:::${S3BucketName}/state/*"
+            - Effect: Allow
+              Action: s3:GetObject
+              Resource:
+                - !Sub "arn:aws:s3:::${S3BucketName}/templates/*"
       Events:
         ManifestUpload:
           Type: S3
@@ -308,8 +472,14 @@ Outputs:
     Value: !Ref ImageBucket
     Description: S3 bucket name
   WebsiteURL:
-    Value: !GetAtt ImageBucket.WebsiteURL
-    Description: S3 static website URL for the frontend
+    Value: !If
+      - HasCustomDomain
+      - !Sub "https://${CloudFrontAlias}"
+      - !Sub "https://${CloudFrontDistribution.DomainName}"
+    Description: CloudFront website URL
+  CloudFrontDistributionId:
+    Value: !Ref CloudFrontDistribution
+    Description: CloudFront distribution ID (for cache invalidation)
   ApiURL:
     Value: !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod"
     Description: API Gateway base URL

@@ -8,6 +8,7 @@
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
     <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/pannellum@2.5.6/build/pannellum.css" />
     <style>
         :root {
             --navy: #113e59;
@@ -59,14 +60,147 @@
         .stat-value { font-size: 22px; font-weight: 700; color: var(--navy); }
         .stat-label { font-size: 13px; color: var(--gray); }
 
+        /* ── View tabs ── */
+        .view-tabs {
+            display: flex;
+            background: var(--white);
+            border-bottom: 2px solid var(--yellow);
+        }
+        .view-tab {
+            padding: 12px 28px;
+            border: none;
+            background: transparent;
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--navy);
+            cursor: pointer;
+            transition: background 0.2s;
+            border-bottom: 3px solid transparent;
+            margin-bottom: -2px;
+        }
+        .view-tab:hover { background: #eef5fb; }
+        .view-tab.active {
+            border-bottom-color: var(--navy);
+            background: #eef5fb;
+        }
+
         /* ── Map ── */
-        #map { width: 100%; height: 450px; }
+        #map { width: 100%; height: 75vh; }
         .no-map-note {
             padding: 40px;
             text-align: center;
             color: var(--gray);
             font-size: 14px;
             background: #e9ecef;
+        }
+
+        /* ── Plan View ── */
+        #planSection { display: none; position: relative; }
+        #planSection.visible { display: block; }
+        #planCanvas {
+            width: 100%;
+            height: 75vh;
+            position: relative;
+            overflow: hidden;
+            background: #e9ecef;
+            cursor: grab;
+            user-select: none;
+        }
+        #planCanvas:active { cursor: grabbing; }
+        #planBg {
+            position: absolute;
+            transform-origin: 0 0;
+            pointer-events: none;
+        }
+        #planBg img {
+            display: block;
+            max-width: none;
+        }
+        .plan-marker {
+            position: absolute;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            border: 2px solid var(--white);
+            transform: translate(-50%, -50%);
+            cursor: pointer;
+            z-index: 10;
+            transition: box-shadow 0.15s;
+        }
+        .plan-marker:hover {
+            box-shadow: 0 0 0 4px rgba(17,62,89,0.3);
+        }
+        .plan-marker.marker-pano { background: var(--navy); }
+        .plan-marker.marker-photo { background: var(--yellow); }
+        .plan-marker-label {
+            position: absolute;
+            top: -20px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 10px;
+            font-weight: 700;
+            color: var(--navy);
+            background: rgba(255,255,255,0.85);
+            padding: 1px 4px;
+            border-radius: 3px;
+            white-space: nowrap;
+            pointer-events: none;
+            display: none;
+        }
+        .plan-marker:hover .plan-marker-label { display: block; }
+        .plan-controls {
+            position: absolute;
+            top: 12px;
+            right: 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            z-index: 20;
+        }
+        .plan-ctrl-btn {
+            width: 36px;
+            height: 36px;
+            border: none;
+            border-radius: 6px;
+            background: var(--white);
+            color: var(--navy);
+            font-size: 18px;
+            font-weight: 700;
+            cursor: pointer;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.15);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .plan-ctrl-btn:hover { background: #eef5fb; }
+        .plan-save-bar {
+            position: absolute;
+            bottom: 12px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 20;
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+        .plan-save-btn {
+            padding: 8px 20px;
+            border: none;
+            border-radius: 6px;
+            background: var(--yellow);
+            color: var(--navy);
+            font-size: 13px;
+            font-weight: 700;
+            cursor: pointer;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.15);
+        }
+        .plan-save-btn:hover { opacity: 0.85; }
+        .plan-save-msg {
+            font-size: 12px;
+            color: var(--white);
+            background: rgba(0,0,0,0.6);
+            padding: 6px 12px;
+            border-radius: 4px;
         }
 
         /* ── Container ── */
@@ -101,11 +235,22 @@
             padding: 12px 16px;
             background: var(--navy);
             color: var(--white);
-            border-radius: 8px 8px 0 0;
+            border-radius: 8px;
             margin-top: 24px;
             font-size: 14px;
+            cursor: pointer;
+            user-select: none;
+            transition: border-radius 0.2s;
         }
+        .batch-header.expanded { border-radius: 8px 8px 0 0; }
         .batch-header:first-child { margin-top: 0; }
+        .batch-toggle {
+            margin-right: 10px;
+            font-size: 12px;
+            transition: transform 0.2s;
+            display: inline-block;
+        }
+        .batch-header.expanded .batch-toggle { transform: rotate(90deg); }
         .batch-downloads a {
             color: var(--yellow);
             text-decoration: none;
@@ -116,7 +261,7 @@
 
         /* ── Gallery grid ── */
         .gallery-grid {
-            display: grid;
+            display: none;
             grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
             gap: 12px;
             padding: 16px;
@@ -124,6 +269,7 @@
             border-radius: 0 0 8px 8px;
             margin-bottom: 4px;
         }
+        .gallery-grid.expanded { display: grid; }
         .gallery-card {
             border-radius: 6px;
             overflow: hidden;
@@ -181,6 +327,12 @@
             max-width: 90vw;
             max-height: 80vh;
             border-radius: 4px;
+        }
+        #lightboxPano {
+            width: 90vw;
+            height: 75vh;
+            border-radius: 4px;
+            display: none;
         }
         .lightbox-close {
             position: absolute;
@@ -320,7 +472,7 @@
             .container { padding: 16px; }
             .gallery-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
             .lightbox-prev, .lightbox-next { display: none; }
-            #map { height: 300px; }
+            #map { height: 50vh; }
             .batch-header { flex-direction: column; gap: 6px; align-items: flex-start; }
         }
     </style>
@@ -348,9 +500,34 @@
     <div class="stat"><span class="stat-label" id="statUpdated"></span></div>
 </div>
 
+<!-- View Tabs (shown dynamically when plan is available) -->
+<div id="viewTabs" class="view-tabs" style="display:none;">
+    <button class="view-tab active" data-view="map" onclick="switchView('map')">Map View</button>
+    <button class="view-tab" data-view="plan" onclick="switchView('plan')">Plan View</button>
+</div>
+
 <!-- Map -->
 <div id="mapSection">
     <div id="map"></div>
+</div>
+
+<!-- Plan View -->
+<div id="planSection">
+    <div id="planCanvas">
+        <div id="planBg"></div>
+        <!-- Markers are injected here by JS -->
+    </div>
+    <div class="plan-controls">
+        <button class="plan-ctrl-btn" onclick="planZoom(1.2)" title="Zoom in">+</button>
+        <button class="plan-ctrl-btn" onclick="planZoom(0.8)" title="Zoom out">&minus;</button>
+        <button class="plan-ctrl-btn" onclick="planRotate(-5)" title="Rotate left">&#8634;</button>
+        <button class="plan-ctrl-btn" onclick="planRotate(5)" title="Rotate right">&#8635;</button>
+        <button class="plan-ctrl-btn" onclick="planReset()" title="Reset alignment">&#8634;</button>
+    </div>
+    <div class="plan-save-bar">
+        <button class="plan-save-btn" onclick="savePlanTransform()">Save Alignment</button>
+        <span id="planSaveMsg" class="plan-save-msg" style="display:none;"></span>
+    </div>
 </div>
 
 <!-- Password Gate (for protected projects) -->
@@ -387,6 +564,7 @@
         <button class="lightbox-close" onclick="closeLightbox()">&times;</button>
         <button class="lightbox-nav lightbox-prev" onclick="navLightbox(-1)">&lsaquo;</button>
         <img id="lightboxImg" alt="" />
+        <div id="lightboxPano"></div>
         <button class="lightbox-nav lightbox-next" onclick="navLightbox(1)">&rsaquo;</button>
         <div class="lightbox-info">
             <span id="lightboxName"></span>
@@ -403,6 +581,7 @@
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/pannellum@2.5.6/build/pannellum.js"></script>
 <script>
 /* ── State ── */
 let projectData = null;
@@ -429,7 +608,7 @@ async function loadApiConfig() {
 /* ── Init ── */
 async function init() {
     try {
-        var resp = await fetch('index.json');
+        var resp = await fetch('index.json', { cache: 'no-store' });
         if (!resp.ok) throw new Error('Failed to load');
         projectData = await resp.json();
 
@@ -505,6 +684,12 @@ async function verifyProjectPassword() {
     }
 }
 
+function escapeHtml(str) {
+    var d = document.createElement('div');
+    d.textContent = str;
+    return d.innerHTML;
+}
+
 /* ── Load project content (after auth check passes) ── */
 function loadContent() {
     projectData.batches.forEach(function(batch) {
@@ -519,6 +704,11 @@ function loadContent() {
     renderGallery('all');
     document.getElementById('galleryContainer').style.display = 'block';
     document.getElementById('statsBar').classList.add('visible');
+
+    // Show view tabs if a plan background is available
+    if (projectData.plan_background) {
+        document.getElementById('viewTabs').style.display = 'flex';
+    }
 }
 
 /* ── Header ── */
@@ -581,14 +771,35 @@ function renderMap() {
             fillOpacity: 0.9
         });
 
-        var label = isPano ? 'View 360&deg; Panorama' : 'View Photo';
-        var popup = '<div style="text-align:center;min-width:180px;">'
-            + '<img src="' + img.src + '" style="width:180px;height:auto;border-radius:4px;margin-bottom:6px;" loading="lazy" />'
-            + '<div style="font-weight:600;font-size:13px;">' + img.filename.replace('.jpg', '') + '</div>'
-            + '<div style="font-size:11px;color:#666;">' + (img.date_time || '') + '</div>'
-            + '<a href="' + img.viewer + '" target="_blank" style="display:inline-block;margin-top:6px;padding:4px 12px;background:#113e59;color:white;border-radius:4px;font-size:12px;text-decoration:none;">' + label + '</a>'
-            + '</div>';
-        marker.bindPopup(popup, { maxWidth: 220 });
+        if (isPano) {
+            /* Pano markers open the full lightbox directly */
+            marker.on('click', (function(image) {
+                return function() {
+                    var idx = allImages.indexOf(image);
+                    if (idx === -1) {
+                        /* Search by filename in case reference differs */
+                        for (var i = 0; i < allImages.length; i++) {
+                            if (allImages[i].filename === image.filename) { idx = i; break; }
+                        }
+                    }
+                    if (idx !== -1) {
+                        /* Ensure we're viewing "all" so the index matches allImages */
+                        filteredImages = allImages.slice();
+                        document.querySelectorAll('.filter-btn').forEach(function(b) { b.classList.remove('active'); });
+                        document.querySelector('.filter-btn[data-filter="all"]').classList.add('active');
+                        openLightbox(idx);
+                    }
+                };
+            })(img));
+        } else {
+            var popup = '<div style="text-align:center;min-width:180px;">'
+                + '<img src="' + encodeURI(img.src) + '" style="width:180px;height:auto;border-radius:4px;margin-bottom:6px;" loading="lazy" />'
+                + '<div style="font-weight:600;font-size:13px;">' + escapeHtml(img.filename.replace('.jpg', '')) + '</div>'
+                + '<div style="font-size:11px;color:#666;">' + escapeHtml(img.date_time || '') + '</div>'
+                + '<a href="' + encodeURI(img.viewer) + '" target="_blank" style="display:inline-block;margin-top:6px;padding:4px 12px;background:#113e59;color:white;border-radius:4px;font-size:12px;text-decoration:none;">View Photo</a>'
+                + '</div>';
+            marker.bindPopup(popup, { maxWidth: 220 });
+        }
         markers.addLayer(marker);
     });
 
@@ -606,6 +817,184 @@ function renderMap() {
         return div;
     };
     legend.addTo(map);
+}
+
+/* ── View switching ── */
+function switchView(view) {
+    document.querySelectorAll('.view-tab').forEach(function(t) { t.classList.remove('active'); });
+    document.querySelector('.view-tab[data-view="' + view + '"]').classList.add('active');
+    document.getElementById('mapSection').style.display = view === 'map' ? '' : 'none';
+    var planEl = document.getElementById('planSection');
+    if (view === 'plan') {
+        planEl.classList.add('visible');
+        if (!planRendered) renderPlanView();
+    } else {
+        planEl.classList.remove('visible');
+    }
+}
+
+/* ── Plan View ── */
+var planRendered = false;
+var planTransform = { translate_x: 0, translate_y: 0, scale: 1, rotation: 0 };
+var planDragging = false;
+var planDragStart = { x: 0, y: 0 };
+
+function renderPlanView() {
+    if (planRendered) return;
+    planRendered = true;
+
+    var canvas = document.getElementById('planCanvas');
+    var bgEl = document.getElementById('planBg');
+
+    // Load saved transform
+    if (projectData.plan_transform) {
+        planTransform = Object.assign({}, planTransform, projectData.plan_transform);
+    }
+
+    // Load background image
+    var img = new Image();
+    img.onload = function() {
+        bgEl.appendChild(img);
+        applyPlanTransform();
+        placePlanMarkers();
+    };
+    img.src = projectData.plan_background;
+
+    // Pan: drag the background
+    canvas.addEventListener('mousedown', function(e) {
+        if (e.target.classList.contains('plan-marker')) return;
+        planDragging = true;
+        planDragStart = { x: e.clientX - planTransform.translate_x, y: e.clientY - planTransform.translate_y };
+    });
+    canvas.addEventListener('mousemove', function(e) {
+        if (!planDragging) return;
+        planTransform.translate_x = e.clientX - planDragStart.x;
+        planTransform.translate_y = e.clientY - planDragStart.y;
+        applyPlanTransform();
+    });
+    window.addEventListener('mouseup', function() { planDragging = false; });
+
+    // Zoom: scroll wheel on the background
+    canvas.addEventListener('wheel', function(e) {
+        e.preventDefault();
+        var factor = e.deltaY < 0 ? 1.08 : 0.92;
+        planTransform.scale *= factor;
+        applyPlanTransform();
+    }, { passive: false });
+}
+
+function applyPlanTransform() {
+    var bgEl = document.getElementById('planBg');
+    bgEl.style.transform = 'translate(' + planTransform.translate_x + 'px, ' + planTransform.translate_y + 'px) '
+        + 'scale(' + planTransform.scale + ') '
+        + 'rotate(' + planTransform.rotation + 'deg)';
+}
+
+function placePlanMarkers() {
+    var canvas = document.getElementById('planCanvas');
+    // Remove existing markers
+    canvas.querySelectorAll('.plan-marker').forEach(function(m) { m.remove(); });
+
+    // Collect images with easting/northing (plan coordinates)
+    var planImages = allImages.filter(function(img) {
+        return img.easting != null && img.northing != null;
+    });
+    if (planImages.length === 0) return;
+
+    // Determine coordinate bounds
+    var minE = Infinity, maxE = -Infinity, minN = Infinity, maxN = -Infinity;
+    planImages.forEach(function(img) {
+        if (img.easting < minE) minE = img.easting;
+        if (img.easting > maxE) maxE = img.easting;
+        if (img.northing < minN) minN = img.northing;
+        if (img.northing > maxN) maxN = img.northing;
+    });
+
+    var rangeE = maxE - minE || 1;
+    var rangeN = maxN - minN || 1;
+    var canvasW = canvas.clientWidth;
+    var canvasH = canvas.clientHeight;
+    var padding = 60;
+
+    planImages.forEach(function(img) {
+        var marker = document.createElement('div');
+        marker.className = 'plan-marker ' + (img.type === 'pano' ? 'marker-pano' : 'marker-photo');
+
+        // Normalize to canvas coordinates (easting=X, northing=Y inverted for screen)
+        var px = padding + ((img.easting - minE) / rangeE) * (canvasW - 2 * padding);
+        var py = padding + ((maxN - img.northing) / rangeN) * (canvasH - 2 * padding);
+
+        marker.style.left = px + 'px';
+        marker.style.top = py + 'px';
+
+        // Label
+        var label = document.createElement('span');
+        label.className = 'plan-marker-label';
+        label.textContent = img.filename.replace('.jpg', '');
+        marker.appendChild(label);
+
+        // Click to open lightbox
+        marker.addEventListener('click', (function(image) {
+            return function(e) {
+                e.stopPropagation();
+                var idx = allImages.indexOf(image);
+                if (idx !== -1) {
+                    filteredImages = allImages.slice();
+                    document.querySelectorAll('.filter-btn').forEach(function(b) { b.classList.remove('active'); });
+                    document.querySelector('.filter-btn[data-filter="all"]').classList.add('active');
+                    openLightbox(idx);
+                }
+            };
+        })(img));
+
+        canvas.appendChild(marker);
+    });
+}
+
+function planZoom(factor) {
+    planTransform.scale *= factor;
+    applyPlanTransform();
+}
+
+function planRotate(degrees) {
+    planTransform.rotation += degrees;
+    applyPlanTransform();
+}
+
+function planReset() {
+    planTransform = { translate_x: 0, translate_y: 0, scale: 1, rotation: 0 };
+    applyPlanTransform();
+}
+
+async function savePlanTransform() {
+    var msgEl = document.getElementById('planSaveMsg');
+    msgEl.style.display = 'inline-block';
+    msgEl.textContent = 'Saving...';
+
+    if (!apiBase) await loadApiConfig();
+
+    try {
+        var resp = await fetch(apiBase + '/save-plan-transform', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                office: projectData.office_name,
+                client: projectData.client_name,
+                project: projectData.project_name,
+                plan_transform: planTransform,
+            })
+        });
+        if (resp.ok) {
+            msgEl.textContent = 'Saved!';
+        } else {
+            var data = await resp.json();
+            msgEl.textContent = data.error || 'Save failed';
+        }
+    } catch (err) {
+        msgEl.textContent = 'Save failed';
+        console.error(err);
+    }
+    setTimeout(function() { msgEl.style.display = 'none'; }, 3000);
 }
 
 /* ── Gallery ── */
@@ -637,17 +1026,19 @@ function renderGallery(filter) {
         var dateStr = batch.file_dt.replace(/_/g, ' ');
         var downloads = '';
         (batch.csv_files || []).forEach(function(f) {
-            var label = f.indexOf('pano') !== -1 ? 'Pano CSV' : 'Photo CSV';
+            var isPano = f.indexOf('pano') !== -1;
+            var isSP = f.indexOf('StatePlane') !== -1;
+            var label = (isPano ? 'Pano' : 'Photo') + (isSP ? ' SP CSV' : ' WGS84 CSV');
             downloads += '<a href="' + f + '" download>' + label + '</a>';
         });
         if (batch.dxf_file) {
             downloads += '<a href="' + batch.dxf_file + '" download>DXF</a>';
         }
-        header.innerHTML = '<span>' + dateStr + ' &mdash; ' + batch.employee + ' (' + group.images.length + ' images)</span>'
+        header.innerHTML = '<span><span class="batch-toggle">&#9654;</span>' + dateStr + ' &mdash; ' + batch.employee + ' (' + group.images.length + ' images)</span>'
             + '<span class="batch-downloads">' + downloads + '</span>';
         container.appendChild(header);
 
-        /* Gallery grid */
+        /* Gallery grid (collapsed by default) */
         var grid = document.createElement('div');
         grid.className = 'gallery-grid';
 
@@ -668,6 +1059,16 @@ function renderGallery(filter) {
         });
 
         container.appendChild(grid);
+
+        /* Toggle expand/collapse on header click */
+        header.addEventListener('click', (function(h, g) {
+            return function(e) {
+                /* Don't toggle when clicking download links */
+                if (e.target.tagName === 'A') return;
+                h.classList.toggle('expanded');
+                g.classList.toggle('expanded');
+            };
+        })(header, grid));
     });
 }
 
@@ -688,6 +1089,7 @@ function openLightbox(idx) {
 }
 
 function closeLightbox() {
+    destroyPanoViewer();
     document.getElementById('lightbox').classList.remove('open');
     currentIdx = -1;
 }
@@ -700,15 +1102,45 @@ function navLightbox(dir) {
     }
 }
 
+var panoViewer = null;
+
+function destroyPanoViewer() {
+    if (panoViewer) {
+        try { panoViewer.destroy(); } catch(e) {}
+        panoViewer = null;
+    }
+}
+
 function updateLightbox() {
     var img = filteredImages[currentIdx];
     if (!img) return;
-    document.getElementById('lightboxImg').src = img.src;
+
+    var flatImg = document.getElementById('lightboxImg');
+    var panoEl = document.getElementById('lightboxPano');
+
+    destroyPanoViewer();
+
+    if (img.type === 'pano') {
+        flatImg.style.display = 'none';
+        panoEl.style.display = 'block';
+        panoViewer = pannellum.viewer('lightboxPano', {
+            type: 'equirectangular',
+            panorama: img.src,
+            autoLoad: true,
+            hfov: 120,
+            compass: false
+        });
+    } else {
+        panoEl.style.display = 'none';
+        flatImg.style.display = 'block';
+        flatImg.src = img.src;
+    }
+
     document.getElementById('lightboxName').textContent = img.filename.replace('.jpg', '');
     document.getElementById('lightboxDate').textContent = img.date_time || '';
     var viewerLink = document.getElementById('lightboxViewer');
     viewerLink.href = img.viewer;
-    viewerLink.textContent = img.type === 'pano' ? 'Open 360\u00b0 Viewer \u2192' : 'Open Viewer \u2192';
+    viewerLink.textContent = img.type === 'pano' ? 'Open Full Viewer \u2192' : 'Open Viewer \u2192';
 }
 
 /* Keyboard navigation */

@@ -5,8 +5,8 @@
     "stack_name": "sunrise-image-manager"
   },
   "site": {
-    "domain_base": "https://www.seihds.com",
-    "domain_prefix": "/auto"
+    "domain_base": "https://pano.seihds.com",
+    "domain_prefix": "/processed"
   },
   "images": {
     "max_width": 8192,

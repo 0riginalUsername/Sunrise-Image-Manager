@@ -15,9 +15,16 @@
 #     see: layers/geo/build_layer.sh --publish
 #
 # Usage:
-#   ./deploy.sh                              # Deploy with defaults
+#   ./deploy.sh                              # Deploy (auto-detects geo layer)
 #   ./deploy.sh --bucket my-bucket-name      # Deploy with custom bucket
-#   ./deploy.sh --geo-layer-arn arn:aws:...   # Deploy with DXF export enabled
+#   ./deploy.sh --geo-layer-arn arn:aws:...   # Deploy with explicit geo layer ARN
+#   ./deploy.sh --no-geo                     # Deploy without DXF export
+#   ./deploy.sh --cf-alias pano.seihds.com --acm-cert arn:aws:acm:...  # Custom domain
+#   ./deploy.sh --email-host smtp.office365.com --email-port 587 \
+#               --email-user noreply@example.com --email-pass SECRET \
+#               --email-sender noreply@example.com \
+#               --email-recipients "alice@example.com,bob@example.com"
+#   ./deploy.sh --signup-domain seihds.com    # Only allow @seihds.com sign-ups
 # ──────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -26,6 +33,16 @@ STACK_NAME="sunrise-image-manager"
 S3_BUCKET="sunrise-image-manager"
 REGION="${AWS_DEFAULT_REGION:-us-east-1}"
 GEO_LAYER_ARN=""
+CF_ALIAS=""
+ACM_CERT=""
+NO_GEO=false
+EMAIL_HOST=""
+EMAIL_PORT="587"
+EMAIL_USER=""
+EMAIL_PASS=""
+EMAIL_SENDER=""
+EMAIL_RECIPIENTS=""
+SIGNUP_DOMAIN=""
 
 # Parse args
 while [[ $# -gt 0 ]]; do
@@ -34,15 +51,46 @@ while [[ $# -gt 0 ]]; do
         --stack)         STACK_NAME="$2"; shift 2 ;;
         --region)        REGION="$2"; shift 2 ;;
         --geo-layer-arn) GEO_LAYER_ARN="$2"; shift 2 ;;
+        --no-geo)        NO_GEO=true; shift ;;
+        --cf-alias)      CF_ALIAS="$2"; shift 2 ;;
+        --acm-cert)      ACM_CERT="$2"; shift 2 ;;
+        --email-host)    EMAIL_HOST="$2"; shift 2 ;;
+        --email-port)    EMAIL_PORT="$2"; shift 2 ;;
+        --email-user)    EMAIL_USER="$2"; shift 2 ;;
+        --email-pass)    EMAIL_PASS="$2"; shift 2 ;;
+        --email-sender)  EMAIL_SENDER="$2"; shift 2 ;;
+        --email-recipients) EMAIL_RECIPIENTS="$2"; shift 2 ;;
+        --signup-domain) SIGNUP_DOMAIN="$2"; shift 2 ;;
         *) echo "Unknown arg: $1"; exit 1 ;;
     esac
 done
 
+# Auto-detect the latest published geo layer if not specified
+if [ -z "$GEO_LAYER_ARN" ] && [ "$NO_GEO" = false ]; then
+    echo ">> No --geo-layer-arn provided, checking for published layer..."
+    DETECTED_ARN=$(aws lambda list-layer-versions \
+        --layer-name "sunrise-geo-layer" \
+        --region "$REGION" \
+        --query 'LayerVersions[0].LayerVersionArn' \
+        --output text 2>/dev/null || true)
+    if [ -n "$DETECTED_ARN" ] && [ "$DETECTED_ARN" != "None" ]; then
+        GEO_LAYER_ARN="$DETECTED_ARN"
+        echo "   Found: $GEO_LAYER_ARN"
+    else
+        echo "   No published geo layer found. DXF export will be disabled."
+        echo "   To enable, run: layers/geo/build_layer.sh --publish"
+    fi
+fi
+
+echo ""
 echo "=== Sunrise Image Manager Deployment ==="
-echo "Stack:     $STACK_NAME"
-echo "Bucket:    $S3_BUCKET"
-echo "Region:    $REGION"
-echo "Geo Layer: ${GEO_LAYER_ARN:-<none — DXF export disabled>}"
+echo "Stack:      $STACK_NAME"
+echo "Bucket:     $S3_BUCKET"
+echo "Region:     $REGION"
+echo "Geo Layer:  ${GEO_LAYER_ARN:-<none — DXF export disabled>}"
+echo "CF Alias:   ${CF_ALIAS:-<none — using *.cloudfront.net>}"
+echo "Email SMTP: ${EMAIL_HOST:-<not configured>}"
+echo "Sign-up:    ${SIGNUP_DOMAIN:-<any email domain>}"
 echo ""
 
 # Step 1: SAM build
@@ -52,18 +100,41 @@ sam build --template template.yaml
 
 # Step 2: SAM deploy
 echo ">> Deploying CloudFormation stack..."
-PARAM_OVERRIDES="S3BucketName=$S3_BUCKET"
+PARAM_OVERRIDES="S3BucketName=$S3_BUCKET DomainPrefix=/processed"
 if [ -n "$GEO_LAYER_ARN" ]; then
     PARAM_OVERRIDES="$PARAM_OVERRIDES GeoLayerArn=$GEO_LAYER_ARN"
 fi
+if [ -n "$CF_ALIAS" ]; then
+    PARAM_OVERRIDES="$PARAM_OVERRIDES CloudFrontAlias=$CF_ALIAS AcmCertificateArn=$ACM_CERT"
+fi
+if [ -n "$EMAIL_HOST" ]; then
+    PARAM_OVERRIDES="$PARAM_OVERRIDES EmailHost=$EMAIL_HOST EmailPort=$EMAIL_PORT EmailUser=$EMAIL_USER EmailPass=$EMAIL_PASS EmailSender=$EMAIL_SENDER EmailRecipients=$EMAIL_RECIPIENTS"
+fi
+if [ -n "$SIGNUP_DOMAIN" ]; then
+    PARAM_OVERRIDES="$PARAM_OVERRIDES AllowedSignUpDomain=$SIGNUP_DOMAIN"
+fi
 
-sam deploy \
+set +e
+SAM_OUTPUT=$(sam deploy \
     --stack-name "$STACK_NAME" \
     --region "$REGION" \
     --resolve-s3 \
     --capabilities CAPABILITY_IAM \
     --parameter-overrides $PARAM_OVERRIDES \
-    --no-confirm-changeset
+    --no-confirm-changeset 2>&1)
+SAM_EXIT=$?
+set -e
+
+echo "$SAM_OUTPUT"
+
+if [ $SAM_EXIT -ne 0 ]; then
+    if echo "$SAM_OUTPUT" | grep -q "No changes to deploy"; then
+        echo ">> No infrastructure changes — continuing with frontend upload..."
+    else
+        echo ">> SAM deploy failed!"
+        exit 1
+    fi
+fi
 
 # Get outputs
 API_URL=$(aws cloudformation describe-stacks \
@@ -90,9 +161,16 @@ COGNITO_CLIENT_ID=$(aws cloudformation describe-stacks \
     --query "Stacks[0].Outputs[?OutputKey=='CognitoClientId'].OutputValue" \
     --output text)
 
+CF_DISTRIBUTION_ID=$(aws cloudformation describe-stacks \
+    --stack-name "$STACK_NAME" \
+    --region "$REGION" \
+    --query "Stacks[0].Outputs[?OutputKey=='CloudFrontDistributionId'].OutputValue" \
+    --output text)
+
 echo ""
 echo ">> API URL:             $API_URL"
 echo ">> Website URL:         $WEBSITE_URL"
+echo ">> CloudFront Dist:     $CF_DISTRIBUTION_ID"
 echo ">> Cognito User Pool:   $COGNITO_USER_POOL_ID"
 echo ">> Cognito Client ID:   $COGNITO_CLIENT_ID"
 
@@ -120,7 +198,7 @@ echo ">> Uploading frontend to S3..."
 cat > "$SCRIPT_DIR/frontend/config.js" << EOF
 // Auto-generated by deploy.sh — points frontend to the deployed API and Cognito
 window.SIM_CONFIG = {
-    apiBase: '${API_URL}',
+    apiBase: '${API_URL}/api',
     cognitoUserPoolId: '${COGNITO_USER_POOL_ID}',
     cognitoClientId: '${COGNITO_CLIENT_ID}'
 };
@@ -142,6 +220,15 @@ aws s3 sync "$SCRIPT_DIR/frontend/" "s3://$S3_BUCKET/frontend/" \
 if [ -f "$SCRIPT_DIR/logo.jpg" ]; then
     aws s3 cp "$SCRIPT_DIR/logo.jpg" "s3://$S3_BUCKET/frontend/logo.jpg" --content-type "image/jpeg"
 fi
+
+# Step 5: Invalidate CloudFront cache so new frontend files are served immediately
+echo ""
+echo ">> Invalidating CloudFront cache..."
+aws cloudfront create-invalidation \
+    --distribution-id "$CF_DISTRIBUTION_ID" \
+    --paths "/frontend/*" \
+    --query "Invalidation.Id" \
+    --output text
 
 echo ""
 echo "=== Deployment Complete ==="

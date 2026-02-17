@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Sunrise Image Manager</title>
     <link rel='stylesheet' href='https://sunrise-eng.com/wp-content/themes/sunrise-eng-2018/style.min.css?ver=1.0.2' />
-    <link rel="icon" type="image/x-icon" href="favicon.ico">
+    <link rel="icon" type="image/x-icon" href="/frontend/favicon.ico">
     <style>
         :root {
             --sunrise-navy: #113e59;
@@ -308,6 +308,117 @@
         }
         .result-link:hover { opacity: 0.85; }
 
+        /* ── App tabs ── */
+        .app-tabs {
+            display: flex;
+            gap: 4px;
+            margin-bottom: 24px;
+            background: var(--sunrise-white);
+            border-radius: 10px;
+            padding: 4px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+        }
+        .app-tab {
+            flex: 1;
+            padding: 12px 16px;
+            border: none;
+            background: transparent;
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--sunrise-navy);
+            cursor: pointer;
+            border-radius: 8px;
+            transition: background 0.2s;
+        }
+        .app-tab:hover { background: #eef5fb; }
+        .app-tab.active {
+            background: var(--sunrise-navy);
+            color: var(--sunrise-white);
+        }
+
+        /* ── Browse projects ── */
+        .browse-section { display: none; }
+        .browse-section.visible { display: block; }
+        .browse-filters {
+            background: var(--sunrise-white);
+            border-radius: 12px;
+            padding: 20px 28px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+            margin-bottom: 20px;
+        }
+        .browse-filters h2 {
+            font-size: 16px;
+            margin-bottom: 14px;
+            color: var(--sunrise-navy);
+            border-bottom: 2px solid var(--sunrise-yellow);
+            padding-bottom: 8px;
+        }
+        .project-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 16px;
+        }
+        .project-card {
+            background: var(--sunrise-white);
+            border-radius: 10px;
+            padding: 20px 24px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+            transition: box-shadow 0.2s, transform 0.1s;
+            cursor: pointer;
+            text-decoration: none;
+            color: inherit;
+            display: block;
+            border-left: 4px solid var(--sunrise-navy);
+        }
+        .project-card:hover {
+            box-shadow: 0 4px 20px rgba(0,0,0,0.12);
+            transform: translateY(-2px);
+        }
+        .project-card h3 {
+            font-size: 16px;
+            margin-bottom: 4px;
+            color: var(--sunrise-navy);
+        }
+        .project-card .project-client {
+            font-size: 13px;
+            color: var(--sunrise-gray);
+            margin-bottom: 10px;
+        }
+        .project-card .project-stats {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+            font-size: 12px;
+        }
+        .project-card .stat {
+            background: var(--sunrise-light-bg);
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-weight: 600;
+        }
+        .project-card .stat-label { color: var(--sunrise-gray); font-weight: 400; }
+        .project-card .project-meta {
+            margin-top: 10px;
+            font-size: 11px;
+            color: var(--sunrise-gray);
+        }
+        .project-card .pw-icon {
+            font-size: 12px;
+            margin-left: 6px;
+        }
+        .browse-empty {
+            text-align: center;
+            padding: 40px;
+            color: var(--sunrise-gray);
+            font-size: 14px;
+        }
+        .browse-loading {
+            text-align: center;
+            padding: 40px;
+            color: var(--sunrise-gray);
+            font-size: 14px;
+        }
+
         /* ── Footer ── */
         .app-footer {
             text-align: center;
@@ -550,6 +661,15 @@
 
     <div class="app-container" id="appContent" style="display:none;">
 
+        <!-- App Tabs -->
+        <div class="app-tabs">
+            <button class="app-tab active" id="tabUpload" onclick="showAppTab('upload')">Upload Images</button>
+            <button class="app-tab" id="tabBrowse" onclick="showAppTab('browse')">Browse Projects</button>
+        </div>
+
+        <!-- ═══ Upload Tab ═══ -->
+        <div id="uploadSection">
+
         <!-- Project Info Form -->
         <div class="form-section">
             <h2>Project Information</h2>
@@ -569,19 +689,6 @@
                     <input type="text" id="projectName" list="projectList" placeholder="Select or type new project" autocomplete="off" required>
                     <datalist id="projectList"></datalist>
                 </div>
-                <div class="form-group">
-                    <label for="employeeName">Employee</label>
-                    <select id="employeeName">
-                        <option value="">Select employee...</option>
-                        <option>Alan</option>
-                        <option>Burt</option>
-                        <option>Gabe</option>
-                        <option>Kevin</option>
-                        <option>Morgan</option>
-                        <option>Nick</option>
-                        <option>Tanner</option>
-                    </select>
-                </div>
             </div>
             <!-- Password management (visible for existing projects) -->
             <div class="pw-manage" id="pwManagePanel">
@@ -589,7 +696,7 @@
                     Project password: <span class="pw-badge" id="pwBadge">checking...</span>
                 </div>
                 <div class="pw-actions">
-                    <input type="password" id="pwManageInput" placeholder="New password">
+                    <input type="password" id="pwManageInput" placeholder="New password" autocomplete="new-password">
                     <button class="btn-pw btn-pw-set" id="pwSetBtn" onclick="setProjectPassword()">Set Password</button>
                     <button class="btn-pw btn-pw-remove" id="pwRemoveBtn" onclick="removeProjectPassword()" style="display:none;">Remove</button>
                 </div>
@@ -618,6 +725,14 @@
                     </label>
                 </div>
                 <div class="form-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="keepOriginals">
+                        Keep original images (no compression or resize)
+                    </label>
+                </div>
+            </div>
+            <div class="form-row">
+                <div class="form-group" id="qualityGroup">
                     <label for="jpegQuality">Compression Quality: <span id="qualityValue">30</span></label>
                     <input type="range" id="jpegQuality" min="10" max="95" value="30">
                 </div>
@@ -629,8 +744,15 @@
                     <small>Format: name, northing, easting, elevation &mdash; for indoor photos without GPS</small>
                 </div>
                 <div class="form-group">
+                    <label for="planUpload">Background Plan (optional)</label>
+                    <input type="file" id="planUpload" accept=".jpg,.jpeg">
+                    <small>JPG site plan or floor plan &mdash; displayed behind image markers on the project page</small>
+                </div>
+            </div>
+            <div class="form-row">
+                <div class="form-group">
                     <label for="projectPassword">Project Password (optional)</label>
-                    <input type="password" id="projectPassword" placeholder="Leave blank for no password">
+                    <input type="password" id="projectPassword" placeholder="Leave blank for no password" autocomplete="new-password">
                     <small>If set, clients must enter this password to view the project landing page</small>
                 </div>
             </div>
@@ -658,6 +780,38 @@
             <a class="result-link" id="landingLink" href="#" target="_blank" style="margin-left:12px;background:var(--sunrise-yellow);color:var(--sunrise-navy);">View Project Page</a>
         </div>
 
+        </div><!-- /uploadSection -->
+
+        <!-- ═══ Browse Projects Tab ═══ -->
+        <div class="browse-section" id="browseSection">
+            <div class="browse-filters">
+                <h2>Find a Project</h2>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="browseOffice">Office</label>
+                        <select id="browseOffice">
+                            <option value="">All Offices</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="browseClient">Client</label>
+                        <select id="browseClient">
+                            <option value="">All Clients</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="browseProject">Project</label>
+                        <select id="browseProject">
+                            <option value="">All Projects</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+            <div id="projectGrid" class="project-grid"></div>
+            <div class="browse-loading" id="browseLoading" style="display:none;">Loading projects...</div>
+            <div class="browse-empty" id="browseEmpty" style="display:none;">No projects found. Upload some images to get started!</div>
+        </div>
+
     </div>
 
     <div class="app-footer">
@@ -665,9 +819,9 @@
     </div>
 
     <!-- config.js is auto-generated by deploy.sh with the API URL + Cognito config -->
-    <script src="config.js"></script>
+    <script src="/frontend/config.js"></script>
     <!-- Cognito auth SDK -->
     <script src="https://unpkg.com/amazon-cognito-identity-js@6/dist/amazon-cognito-identity.min.js"></script>
-    <script src="app.js"></script>
+    <script src="/frontend/app.js"></script>
 </body>
 </html>

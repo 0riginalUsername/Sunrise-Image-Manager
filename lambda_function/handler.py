@@ -26,25 +26,32 @@ from decimal import Decimal, getcontext
 from email.message import EmailMessage
 from pathlib import Path
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 import boto3
 import piexif
 from PIL import Image, ExifTags
 from jinja2 import Environment, BaseLoader
+from markupsafe import Markup
 
 # Optional geo/DXF dependencies — provided by the geo Lambda Layer.
 # If the layer is not attached, DXF export is gracefully skipped.
 try:
     import ezdxf
     from ezdxf.addons import Importer
-    import geopandas as gpd
-    from shapely.geometry import Point
+    import shapefile  # pyshp — lightweight shapefile reader
+    from shapely.geometry import Point, Polygon, shape
     from pyproj import Transformer
     HAS_GEO = True
-except ImportError:
+except Exception as _geo_err:
     HAS_GEO = False
+    # Log at module level so we can diagnose layer attachment issues
+    import logging as _logging
+    _logging.getLogger().warning("Geo layer import failed (%s): %s", type(_geo_err).__name__, _geo_err)
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
+logger.info("Geo layer available: %s", HAS_GEO)
 
 s3 = boto3.client("s3")
 
@@ -53,7 +60,7 @@ s3 = boto3.client("s3")
 # ---------------------------------------------------------------------------
 BUCKET = os.environ.get("S3_BUCKET", "sunrise-image-manager")
 DOMAIN_BASE = os.environ.get("DOMAIN_BASE", "https://pano.seihds.com")
-DOMAIN_PREFIX = os.environ.get("DOMAIN_PREFIX", "")
+DOMAIN_PREFIX = os.environ.get("DOMAIN_PREFIX", "/processed")
 MAX_WIDTH = int(os.environ.get("MAX_WIDTH", "8192"))
 DEFAULT_JPEG_QUALITY = int(os.environ.get("JPEG_QUALITY", "30"))
 PANO_ASPECT_RATIO = float(os.environ.get("PANO_ASPECT_RATIO", "1.9"))
@@ -230,7 +237,7 @@ def load_template_from_s3(template_key):
 
 
 def render_template_string(template_str, context):
-    env = Environment(loader=BaseLoader())
+    env = Environment(loader=BaseLoader(), autoescape=True)
     tmpl = env.from_string(template_str)
     return tmpl.render(**context)
 
@@ -238,17 +245,16 @@ def render_template_string(template_str, context):
 # ---------------------------------------------------------------------------
 # CSV export
 # ---------------------------------------------------------------------------
-def generate_csv(images_meta, office_name, client_name, project_name, file_dt, type_str):
+def generate_csv(images_meta, output_prefix, type_str):
     """Generate CSV content as string with GPS and survey coordinate columns."""
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(["Filename", "Date Taken", "GPSLatitude", "GPSLongitude", "GPSAltitude",
                       "Northing", "Easting", "Elevation", "Hyperlink"])
-    domain_path = f"{DOMAIN_PREFIX}/{office_name}/{client_name}/{project_name}/{file_dt}"
     first_link = None
     for info in images_meta:
         base = info["base_name"].rsplit(".", 1)[0]
-        hyperlink = f"{DOMAIN_BASE}{domain_path}/{base}.htm"
+        hyperlink = f"{DOMAIN_BASE}/{output_prefix}{base}.htm"
         if first_link is None:
             first_link = hyperlink
         writer.writerow([base, info.get("date_time"), info.get("lat"), info.get("lon"), info.get("alt"),
@@ -257,36 +263,105 @@ def generate_csv(images_meta, office_name, client_name, project_name, file_dt, t
     return buf.getvalue(), first_link
 
 
+def generate_state_plane_csv(images_meta, output_prefix, type_str):
+    """Generate CSV with State Plane coordinates (requires geo layer)."""
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["Filename", "Date Taken", "ZoneName", "EPSG", "Easting", "Northing",
+                      "Elevation_ft", "Hyperlink"])
+    rows_written = 0
+    for info in images_meta:
+        base = info["base_name"].rsplit(".", 1)[0]
+        hyperlink = f"{DOMAIN_BASE}/{output_prefix}{base}.htm"
+
+        northing = info.get("northing")
+        easting = info.get("easting")
+        csv_elev = info.get("csv_elevation")
+        if northing is not None and easting is not None:
+            # CSV survey coordinates — already in State Plane
+            writer.writerow([base, info.get("date_time"), "CSV", "", easting, northing,
+                              csv_elev or 0, hyperlink])
+            rows_written += 1
+        else:
+            lat, lon, alt = info.get("lat"), info.get("lon"), info.get("alt")
+            if lat is None or lon is None:
+                continue
+            try:
+                zone_name, epsg, x, y, z = latlon_to_state_plane(lat, lon, alt)
+                writer.writerow([base, info.get("date_time"), zone_name, epsg, x, y, z, hyperlink])
+                rows_written += 1
+            except Exception as e:
+                logger.warning("State Plane CSV: projection fail for %s: %s", base, e)
+    if rows_written == 0:
+        return None
+    return buf.getvalue()
+
+
 # ---------------------------------------------------------------------------
 # Position CSV parsing  (name, northing, easting, elevation)
 # ---------------------------------------------------------------------------
 def parse_position_csv(csv_text):
-    """Parse a position CSV into a dict keyed by lowercase name (no extension)."""
+    """Parse a position CSV into a dict keyed by lowercase name (no extension).
+
+    Supports common column-name variants (case-insensitive):
+      name / SetupName / setup_name / filename → image name
+      northing / Northing                      → northing
+      easting  / Easting                       → easting
+      elevation / Elevation / height / Height  → elevation
+    """
     positions = {}
     if not csv_text:
         return positions
     reader = csv.DictReader(io.StringIO(csv_text))
+    if reader.fieldnames is None:
+        return positions
+
+    # Build a case-insensitive lookup so column names like "SetupName",
+    # "Northing", etc. map to our canonical keys.
+    col_map = {}  # canonical_key → actual CSV header
+    name_variants = {"name", "setupname", "setup_name", "filename", "file_name", "imagename", "image_name", "point", "pointname", "point_name"}
+    northing_variants = {"northing", "north", "n", "y"}
+    easting_variants = {"easting", "east", "e", "x"}
+    elevation_variants = {"elevation", "elev", "height", "z", "altitude", "alt"}
+
+    for header in reader.fieldnames:
+        h = header.strip().lower().replace(" ", "")
+        if h in name_variants:
+            col_map["name"] = header
+        elif h in northing_variants:
+            col_map["northing"] = header
+        elif h in easting_variants:
+            col_map["easting"] = header
+        elif h in elevation_variants:
+            col_map["elevation"] = header
+
+    if "name" not in col_map:
+        logger.warning("Position CSV has no recognised name column (headers: %s)", reader.fieldnames)
+        return positions
+
     for row in reader:
-        name = row.get("name", "").strip()
+        name = row.get(col_map.get("name", ""), "").strip()
         if not name:
             continue
         name_key = name.rsplit(".", 1)[0].replace(" ", "_").lower()
         try:
             positions[name_key] = {
-                "northing": float(row.get("northing", 0)),
-                "easting": float(row.get("easting", 0)),
-                "elevation": float(row.get("elevation", 0)),
+                "northing": float(row.get(col_map.get("northing", ""), 0)),
+                "easting": float(row.get(col_map.get("easting", ""), 0)),
+                "elevation": float(row.get(col_map.get("elevation", ""), 0)),
             }
         except (ValueError, TypeError):
             continue
+    logger.info("Parsed %d positions from CSV (name col=%r)", len(positions), col_map.get("name"))
     return positions
 
 
 # ---------------------------------------------------------------------------
 # Email notification
 # ---------------------------------------------------------------------------
-def send_email(project_name, client_name, office_name, dt_str, employee, first_link,
-               s3_output_prefix, submitter_email=""):
+def send_email(project_name, client_name, office_name, dt_str, employee,
+               office_name_raw, output_prefix, csv_keys=None, dxf_key=None,
+               submitter_email=""):
     """Send HTML email notification via SMTP."""
     # Build recipient list: configured recipients + the submitter
     all_recipients = list(RECIPIENTS)
@@ -298,14 +373,35 @@ def send_email(project_name, client_name, office_name, dt_str, employee, first_l
         return
     try:
         template_str = load_template_from_s3(EMAIL_TEMPLATE_KEY)
+
+        # Landing page URL
+        landing_url = f"{DOMAIN_BASE}/processed/{office_name_raw}/{client_name}/{project_name}/index.html"
+
+        # Build download links HTML
+        link_style = "color:#98805b;text-decoration:underline;"
+        download_parts = []
+        for csv_key in (csv_keys or []):
+            label = csv_key.rsplit("/", 1)[-1]
+            url = f"{DOMAIN_BASE}/{csv_key}"
+            download_parts.append(f'<a href="{url}" style="{link_style}">{label}</a>')
+        if dxf_key:
+            label = dxf_key.rsplit("/", 1)[-1]
+            url = f"{DOMAIN_BASE}/{dxf_key}"
+            download_parts.append(f'<a href="{url}" style="{link_style}">{label}</a>')
+
+        download_links = "<br>".join(download_parts) if download_parts else '<span style="color:#6b7280;">No downloads for this batch</span>'
+
+        logo_url = f"{DOMAIN_BASE}/frontend/logo.jpg"
+
         html_content = render_template_string(template_str, {
             "OFFICE_NAME": office_name,
             "PROJECT_NAME": project_name,
             "CLIENT_NAME": client_name,
             "UPLOAD_TIME": dt_str,
             "EMPLOYEE": employee,
-            "PANO_LINK": first_link or "",
-            "DIRECTORY_PATH": f"s3://{BUCKET}/{s3_output_prefix}",
+            "LANDING_URL": landing_url,
+            "DOWNLOAD_LINKS": Markup(download_links),
+            "LOGO_URL": logo_url,
         })
         msg = EmailMessage()
         msg["Subject"] = f"Sunrise Engineering - Project Update: {project_name}"
@@ -348,20 +444,34 @@ def meters_to_feet(meters):
     return meters * (3937 / 1200)
 
 
+def _shape_to_polygon(s):
+    """Convert a pyshp shape to a Shapely Polygon, handling MULTIPATCH (type 31)."""
+    if s.shapeType == 31:  # MULTIPATCH – build polygon from raw points/parts
+        parts = list(s.parts) + [len(s.points)]
+        rings = [s.points[parts[i]:parts[i + 1]] for i in range(len(parts) - 1)]
+        return Polygon(rings[0], rings[1:])
+    return shape(s.__geo_interface__)
+
+
 def latlon_to_state_plane(lat, lon, alt=None):
     """Convert WGS84 lat/lon to State Plane coordinates using the NAD83 shapefile."""
     shp_path = _download_shapefile()
-    zones = gpd.read_file(shp_path)
     pt = Point(lon, lat)
-    match = zones[zones.contains(pt)]
-    if match.empty:
-        raise ValueError("No State Plane zone found for this location")
-    zone = match.iloc[0]
-    epsg = int(zone["EPSG"])
-    transformer = Transformer.from_crs("EPSG:4326", f"EPSG:{epsg}", always_xy=True)
-    z = meters_to_feet(alt) if alt is not None else 0
-    x, y = transformer.transform(lon, lat)
-    return zone["ZONENAME"], epsg, x, y, z
+    reader = shapefile.Reader(shp_path)
+    fields = [f[0] for f in reader.fields[1:]]  # skip DeletionFlag
+    for sr in reader.iterShapeRecords():
+        try:
+            geom = _shape_to_polygon(sr.shape)
+        except Exception:
+            continue
+        if geom.contains(pt):
+            rec = dict(zip(fields, sr.record))
+            epsg = int(rec["EPSG"])
+            transformer = Transformer.from_crs("EPSG:4326", f"EPSG:{epsg}", always_xy=True)
+            z = meters_to_feet(alt) if alt is not None else 0
+            x, y = transformer.transform(lon, lat)
+            return rec["ZONENAME"], epsg, x, y, z
+    raise ValueError("No State Plane zone found for this location")
 
 
 # ---------------------------------------------------------------------------
@@ -421,8 +531,6 @@ def export_dxf(bucket, pano_meta, photo_meta, office_name, client_name, project_
         if proj_slug != "NoGPS":
             break
 
-    domain_path = f"{DOMAIN_PREFIX}/{office_name}/{client_name}/{project_name}/{file_dt}"
-
     def insert_blocks(meta_list, block_name, layer_name):
         for info in meta_list:
             northing = info.get("northing")
@@ -443,7 +551,7 @@ def export_dxf(bucket, pano_meta, photo_meta, office_name, client_name, project_
                     continue
 
             base = info["base_name"].rsplit(".", 1)[0]
-            hyperlink = f"{DOMAIN_BASE}{domain_path}/{base}.htm"
+            hyperlink = f"{DOMAIN_BASE}/{output_prefix}{base}.htm"
             block_ref = msp.add_blockref(block_name, (x, y, z), dxfattribs={
                 "layer": layer_name,
                 "xscale": block_scale,
@@ -506,7 +614,8 @@ def register_client_project(office_name, client_name, project_name):
 # Project landing page  (index.html + index.json per project)
 # ---------------------------------------------------------------------------
 def update_project_index(bucket, office_name, client_name, project_name, file_dt, employee_name,
-                         pano_meta, photo_meta, output_prefix, csv_files=None, dxf_file=None):
+                         pano_meta, photo_meta, output_prefix, csv_files=None, dxf_file=None,
+                         plan_background=None):
     """Append the current batch to the project index and deploy the landing page."""
     project_prefix = f"processed/{office_name}/{client_name}/{project_name}/"
     index_key = f"{project_prefix}index.json"
@@ -517,6 +626,10 @@ def update_project_index(bucket, office_name, client_name, project_name, file_dt
         index_data = json.loads(obj["Body"].read().decode("utf-8"))
     except Exception:
         index_data = {"office_name": office_name, "client_name": client_name, "project_name": project_name, "batches": []}
+
+    # Store plan background reference if provided (project-level, not per-batch)
+    if plan_background:
+        index_data["plan_background"] = plan_background
 
     # Check if this project is password-protected
     auth_key = f"state/project-auth/{office_name}/{client_name}/{project_name}.json"
@@ -568,14 +681,15 @@ def update_project_index(bucket, office_name, client_name, project_name, file_dt
     index_data["batches"] = [b for b in index_data["batches"] if b["file_dt"] != file_dt]
     index_data["batches"].append(batch_entry)
 
-    # Write index.json
+    # Write index.json (no-cache so CloudFront serves fresh data after appends)
     s3.put_object(
         Bucket=bucket, Key=index_key,
         Body=json.dumps(index_data, indent=2).encode("utf-8"),
         ContentType="application/json",
+        CacheControl="no-cache, no-store, must-revalidate",
     )
 
-    # Deploy landing page HTML
+    # Deploy landing page HTML (no-cache so users always see latest batches)
     try:
         with open(LANDING_PAGE_FILE, "r") as f:
             landing_html = f.read()
@@ -583,6 +697,7 @@ def update_project_index(bucket, office_name, client_name, project_name, file_dt
             Bucket=bucket, Key=f"{project_prefix}index.html",
             Body=landing_html.encode("utf-8"),
             ContentType="text/html",
+            CacheControl="no-cache, no-store, must-revalidate",
         )
     except Exception as e:
         logger.warning("Failed to deploy landing page: %s", e)
@@ -634,18 +749,29 @@ def lambda_handler(event, context):
         project_name = manifest["project_name"]
         employee_name = manifest["employee_name"]
         file_dt = manifest["file_dt"]
+
+        # Validate path components (defense-in-depth — API already validates)
+        safe_name_re = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_\-\.]{0,127}$')
+        for name, label in [(office_name, "office_name"), (client_name, "client_name"),
+                            (project_name, "project_name"), (file_dt, "file_dt")]:
+            if not safe_name_re.match(name):
+                raise ValueError(f"Invalid {label}: {name!r}")
+
         pano_keys = list(manifest.get("pano_keys", []))
         photo_keys = list(manifest.get("photo_keys", []))
         image_keys = manifest.get("image_keys", [])
         keep_filenames = manifest.get("keep_filenames", False)
+        keep_originals = manifest.get("keep_originals", False)
         jpeg_quality = manifest.get("jpeg_quality")
         position_csv = manifest.get("position_csv", "")
         submitter_email = manifest.get("submitter_email", "")
+        plan_key = manifest.get("plan_key", "")
 
         # Parse position CSV into lookup dict
         csv_positions = parse_position_csv(position_csv)
 
-        # Auto-classify unclassified images by aspect ratio
+        # Auto-classify unclassified images by aspect ratio.
+        # Only reads enough to check dimensions, then discards bytes.
         if image_keys:
             logger.info("Auto-classifying %d unclassified images", len(image_keys))
             for key in image_keys:
@@ -653,6 +779,7 @@ def lambda_handler(event, context):
                     img_obj = s3.get_object(Bucket=bucket, Key=key)
                     img_bytes = img_obj["Body"].read()
                     img_type = classify_image_type(img_bytes)
+                    del img_bytes  # free immediately — Phase 1 of process_image_set will re-download for EXIF
                     if img_type == "pano":
                         pano_keys.append(key)
                     else:
@@ -673,42 +800,81 @@ def lambda_handler(event, context):
             img_template_str = load_template_from_s3(IMG_TEMPLATE_KEY)
 
             # Process panos and photos
+            total_images = len(pano_keys) + len(photo_keys)
             pano_meta = process_image_set(bucket, pano_keys, output_prefix, client_name, project_name, file_dt, "Pano", pano_template_str,
-                                          keep_filenames=keep_filenames, jpeg_quality=jpeg_quality, csv_positions=csv_positions)
+                                          keep_filenames=keep_filenames, keep_originals=keep_originals, jpeg_quality=jpeg_quality, csv_positions=csv_positions,
+                                          job_prefix=job_prefix, total_images=total_images, images_done=0)
             photo_meta = process_image_set(bucket, photo_keys, output_prefix, client_name, project_name, file_dt, "Photo", img_template_str,
-                                           keep_filenames=keep_filenames, jpeg_quality=jpeg_quality, csv_positions=csv_positions)
+                                           keep_filenames=keep_filenames, keep_originals=keep_originals, jpeg_quality=jpeg_quality, csv_positions=csv_positions,
+                                           job_prefix=job_prefix, total_images=total_images, images_done=len(pano_keys))
 
             # Generate CSVs
             first_link = None
             csv_keys = []
             if pano_meta:
-                csv_content, first_link = generate_csv(pano_meta, office_name, client_name, project_name, file_dt, "pano")
+                csv_content, first_link = generate_csv(pano_meta, output_prefix, "pano")
                 csv_key = f"{output_prefix}{file_dt}_{client_name}_{project_name}_pano_WGS84.csv"
                 s3.put_object(Bucket=bucket, Key=csv_key, Body=csv_content.encode("utf-8"), ContentType="text/csv")
                 csv_keys.append(csv_key)
             if photo_meta:
-                csv_content, link = generate_csv(photo_meta, office_name, client_name, project_name, file_dt, "photo")
+                csv_content, link = generate_csv(photo_meta, output_prefix, "photo")
                 csv_key = f"{output_prefix}{file_dt}_{client_name}_{project_name}_photo_WGS84.csv"
                 s3.put_object(Bucket=bucket, Key=csv_key, Body=csv_content.encode("utf-8"), ContentType="text/csv")
                 csv_keys.append(csv_key)
                 if not first_link:
                     first_link = link
 
-            # Generate DXF (if geo layer is available)
-            dxf_key = export_dxf(bucket, pano_meta, photo_meta, office_name, client_name, project_name, file_dt, output_prefix)
+            # Generate DXF and State Plane CSVs (if geo layer is available)
+            dxf_key = None
+            try:
+                dxf_key = export_dxf(bucket, pano_meta, photo_meta, office_name, client_name, project_name, file_dt, output_prefix)
+            except Exception as e:
+                logger.error("DXF export failed (non-fatal): %s", e, exc_info=True)
+
+            if HAS_GEO:
+                for meta_list, type_str in [(pano_meta, "pano"), (photo_meta, "photo")]:
+                    if not meta_list:
+                        continue
+                    try:
+                        sp_content = generate_state_plane_csv(meta_list, output_prefix, type_str)
+                        if sp_content:
+                            sp_key = f"{output_prefix}{file_dt}_{client_name}_{project_name}_{type_str}_StatePlane.csv"
+                            s3.put_object(Bucket=bucket, Key=sp_key, Body=sp_content.encode("utf-8"), ContentType="text/csv")
+                            csv_keys.append(sp_key)
+                    except Exception as e:
+                        logger.error("State Plane CSV failed for %s (non-fatal): %s", type_str, e, exc_info=True)
+
+            # Copy plan background to project folder if provided
+            plan_background = None
+            if plan_key:
+                try:
+                    project_prefix = f"processed/{office_name}/{client_name}/{project_name}/"
+                    plan_dest = f"{project_prefix}plan.jpg"
+                    s3.copy_object(
+                        Bucket=bucket,
+                        CopySource={"Bucket": bucket, "Key": plan_key},
+                        Key=plan_dest,
+                        ContentType="image/jpeg",
+                    )
+                    plan_background = "plan.jpg"
+                    logger.info("Plan background copied to s3://%s/%s", bucket, plan_dest)
+                except Exception as e:
+                    logger.error("Failed to copy plan background: %s", e)
 
             # Update project landing page (appendable across batches)
             update_project_index(bucket, office_name, client_name, project_name, file_dt, employee_name,
-                                 pano_meta, photo_meta, output_prefix, csv_files=csv_keys, dxf_file=dxf_key)
+                                 pano_meta, photo_meta, output_prefix, csv_files=csv_keys, dxf_file=dxf_key,
+                                 plan_background=plan_background)
 
             # Send email (include submitter)
             send_email(project_name, client_name, office_name, file_dt, employee_name,
-                       first_link, output_prefix, submitter_email=submitter_email)
+                       office_name, output_prefix, csv_keys=csv_keys, dxf_key=dxf_key,
+                       submitter_email=submitter_email)
 
             # Register office/client/project in the registry
             register_client_project(office_name, client_name, project_name)
 
-            landing_url = f"{DOMAIN_BASE}{DOMAIN_PREFIX}/{office_name}/{client_name}/{project_name}/index.html"
+            landing_url = f"{DOMAIN_BASE}/processed/{office_name}/{client_name}/{project_name}/index.html"
             write_status(job_prefix, "complete", "Processing finished", output_prefix, first_link or "", landing_url)
             logger.info("Job complete: %s", output_prefix)
 
@@ -720,120 +886,190 @@ def lambda_handler(event, context):
     return {"statusCode": 200, "body": "OK"}
 
 
+# Phase 1 (metadata scan) is lightweight — only EXIF parsing, no pixel decode.
+_SCAN_WORKERS = 10
+
+# Phase 2 (compress+upload) is memory-heavy.  During compression each worker
+# holds: raw JPEG bytes + fully-decoded RGB pixel buffer (~8× the file size).
+# For 30 MB images that's ~270 MB per worker.  Lambda has 10 240 MB; keeping
+# ~640 MB headroom means we can safely run  floor(9600 / per_worker_mb)
+# workers.  _max_phase2_workers() computes this after Phase 1 measures sizes.
+_MAX_PHASE2_WORKERS = 20          # upper bound (small files)
+_LAMBDA_AVAILABLE_MB = 9600       # 10240 minus runtime/Python overhead
+_BYTES_PER_PIXEL = 3              # RGB
+_JPEG_DECODE_RATIO = 8             # 1 MB JPEG ≈ 4 MB pixels, ×2 for convert("RGB") headroom
+
+
+def _max_phase2_workers(avg_file_bytes):
+    """Return a safe worker count for Phase 2 based on average image size."""
+    if avg_file_bytes <= 0:
+        return _MAX_PHASE2_WORKERS
+    avg_mb = avg_file_bytes / (1024 * 1024)
+    # per-worker estimate: raw bytes + decoded pixels + output buffer headroom
+    per_worker_mb = avg_mb + (avg_mb * _JPEG_DECODE_RATIO) + 10
+    workers = int(_LAMBDA_AVAILABLE_MB / per_worker_mb)
+    return max(2, min(_MAX_PHASE2_WORKERS, workers))
+
+
 def process_image_set(bucket, s3_keys, output_prefix, client_name, project_name, file_dt, type_str, template_str,
-                      keep_filenames=False, jpeg_quality=None, csv_positions=None):
+                      keep_filenames=False, keep_originals=False, jpeg_quality=None, csv_positions=None,
+                      job_prefix=None, total_images=0, images_done=0):
     """
-    Download raw images from S3, extract metadata, rename, compress, generate HTML,
-    upload processed outputs back to S3. Returns list of metadata dicts.
+    Process images in two phases to support large batches (1500+) without OOM.
+
+    Phase 1 — Metadata scan (low memory):
+        Download each image, extract EXIF (GPS/datetime), discard bytes.
+        Only metadata + S3 key are kept. Memory: ~1 KB per image.
+
+    Phase 2 — Parallel process + upload:
+        After sorting and assigning filenames, re-download each image from S3,
+        compress, render HTML, and upload — all in parallel via ThreadPoolExecutor.
+        S3→S3 within the same region is fast (~100 ms/file), so the re-download
+        cost is negligible compared to the parallelism gained.
+        Peak memory: ~_PARALLEL_WORKERS images × 5-30 MB each ≈ 300 MB.
     """
     if not s3_keys:
         return []
     csv_positions = csv_positions or {}
 
-    # Download and collect metadata
-    raw_images = []
-    for key in s3_keys:
-        try:
-            obj = s3.get_object(Bucket=bucket, Key=key)
-            img_bytes = obj["Body"].read()
-            lat, lon, alt, date_time = extract_image_metadata(img_bytes)
-            if date_time:
-                try:
-                    dt = datetime.strptime(date_time, "%Y:%m:%d %H:%M:%S")
-                except Exception:
-                    dt = datetime.utcnow()
-            else:
+    # ── Phase 1: Parallel metadata scan ──────────────────────────────────
+    # Download each image, extract EXIF (GPS/datetime), discard bytes.
+    # Separate executor from Phase 2 to ensure clean thread state.
+    image_meta = [None] * len(s3_keys)
+
+    def _scan_metadata(idx, key):
+        """Download one image, extract EXIF metadata, discard bytes."""
+        obj = s3.get_object(Bucket=bucket, Key=key)
+        img_bytes = obj["Body"].read()
+        file_size = len(img_bytes)
+        lat, lon, alt, date_time = extract_image_metadata(img_bytes)
+        del img_bytes
+
+        if date_time:
+            try:
+                dt = datetime.strptime(date_time, "%Y:%m:%d %H:%M:%S")
+            except Exception:
                 dt = datetime.utcnow()
+        else:
+            dt = datetime.utcnow()
 
-            # Original filename from S3 key
-            orig_filename = key.rsplit("/", 1)[-1]
-            orig_base = orig_filename.rsplit(".", 1)[0].lower()
+        orig_filename = key.rsplit("/", 1)[-1]
+        orig_base = orig_filename.rsplit(".", 1)[0].lower()
+        pos = csv_positions.get(orig_base)
 
-            # Check for CSV position data
-            pos = csv_positions.get(orig_base)
+        return {
+            "s3_key": key,
+            "orig_filename": orig_filename,
+            "file_size": file_size,
+            "lat": lat, "lon": lon, "alt": alt,
+            "northing": pos["northing"] if pos else None,
+            "easting": pos["easting"] if pos else None,
+            "csv_elevation": pos["elevation"] if pos else None,
+            "date_time": date_time,
+            "sort_dt": dt,
+        }
 
-            raw_images.append({
-                "s3_key": key,
-                "bytes": img_bytes,
-                "orig_filename": orig_filename,
-                "lat": lat,
-                "lon": lon,
-                "alt": alt,
-                "northing": pos["northing"] if pos else None,
-                "easting": pos["easting"] if pos else None,
-                "csv_elevation": pos["elevation"] if pos else None,
-                "date_time": date_time,
-                "sort_dt": dt,
-            })
-        except Exception as e:
-            logger.warning("Failed to download %s: %s", key, e)
+    with ThreadPoolExecutor(max_workers=_SCAN_WORKERS) as scan_executor:
+        futures = {}
+        for idx, key in enumerate(s3_keys):
+            futures[scan_executor.submit(_scan_metadata, idx, key)] = idx
+        for future in as_completed(futures):
+            idx = futures[future]
+            try:
+                image_meta[idx] = future.result()
+            except Exception as e:
+                logger.warning("Failed to read metadata for %s: %s", s3_keys[idx], e)
+
+    image_meta = [m for m in image_meta if m is not None]
 
     # Sort by datetime
-    raw_images.sort(key=lambda x: x["sort_dt"])
+    image_meta.sort(key=lambda x: x["sort_dt"])
 
-    # Rolling counter only used when not keeping original filenames
+    # Assign sequential filenames (must be done before parallel phase)
     if not keep_filenames:
         prefix, number = read_photo_counter()
 
-    results = []
-
-    for img_data in raw_images:
+    for meta in image_meta:
         if keep_filenames:
-            final_name = img_data["orig_filename"]
-            base_name = final_name.rsplit(".", 1)[0]
+            meta["final_name"] = meta["orig_filename"]
+            meta["base_name"] = meta["final_name"].rsplit(".", 1)[0]
         else:
             number += 1
             if number > 999:
                 number = 1
                 prefix = increment_prefix(prefix)
-            final_name = f"{prefix}{number:03d}.jpg"
-            base_name = f"{prefix}{number:03d}"
+            meta["final_name"] = f"{prefix}{number:03d}.jpg"
+            meta["base_name"] = f"{prefix}{number:03d}"
 
-        # Compress
-        compressed_bytes, content_type = compress_image(img_data["bytes"], quality=jpeg_quality)
+    # ── Phase 2: Parallel download → compress → upload ──────────────────
+    # Choose worker count based on average file size measured in Phase 1.
+    avg_file_bytes = (sum(m["file_size"] for m in image_meta) / len(image_meta)) if image_meta else 0
+    phase2_workers = _max_phase2_workers(avg_file_bytes)
+    logger.info("Phase 2: %d images, avg %.1f MB, using %d workers",
+                len(image_meta), avg_file_bytes / (1024 * 1024), phase2_workers)
+
+    results = [None] * len(image_meta)
+    processed_count = [0]  # mutable counter for progress reporting
+
+    def _process_single(idx, meta):
+        """Download, compress, render HTML, and upload a single image."""
+        # Re-download from S3
+        obj = s3.get_object(Bucket=bucket, Key=meta["s3_key"])
+        img_bytes = obj["Body"].read()
+
+        # Compress (or keep original)
+        if keep_originals:
+            output_bytes, content_type = img_bytes, "image/jpeg"
+        else:
+            output_bytes, content_type = compress_image(img_bytes, quality=jpeg_quality)
+        del img_bytes  # free raw bytes
 
         # Upload compressed image to S3
-        img_key = f"{output_prefix}{final_name}"
-        s3.put_object(
-            Bucket=bucket,
-            Key=img_key,
-            Body=compressed_bytes,
-            ContentType=content_type,
-        )
+        img_key = f"{output_prefix}{meta['final_name']}"
+        s3.put_object(Bucket=bucket, Key=img_key, Body=output_bytes, ContentType=content_type)
+        del output_bytes  # free compressed bytes
 
-        # Build metadata for CSV/HTML
-        dt_str = img_data.get("date_time")
+        # Render and upload HTML viewer page
+        dt_str = meta.get("date_time")
         try:
             dt_obj = datetime.strptime(dt_str, "%Y:%m:%d %H:%M:%S") if dt_str else datetime.utcnow()
         except Exception:
             dt_obj = datetime.utcnow()
         converted_dt = dt_obj.strftime("%d-%b-%y %I:%M:%S%p")
 
-        # Render HTML viewer page
         html_content = render_template_string(template_str, {
             "TITLE": client_name,
             "DESCRIPTION": file_dt,
-            "IMG": final_name,
+            "IMG": meta["final_name"],
             "IMG_DATE": converted_dt,
         })
-        html_key = f"{output_prefix}{base_name}.htm"
-        s3.put_object(
-            Bucket=bucket,
-            Key=html_key,
-            Body=html_content.encode("utf-8"),
-            ContentType="text/html",
-        )
+        html_key = f"{output_prefix}{meta['base_name']}.htm"
+        s3.put_object(Bucket=bucket, Key=html_key,
+                      Body=html_content.encode("utf-8"), ContentType="text/html")
 
-        results.append({
-            "base_name": final_name,
-            "lat": img_data["lat"],
-            "lon": img_data["lon"],
-            "alt": img_data["alt"],
-            "northing": img_data["northing"],
-            "easting": img_data["easting"],
-            "csv_elevation": img_data["csv_elevation"],
+        return {
+            "base_name": meta["final_name"],
+            "lat": meta["lat"], "lon": meta["lon"], "alt": meta["alt"],
+            "northing": meta["northing"], "easting": meta["easting"],
+            "csv_elevation": meta["csv_elevation"],
             "date_time": dt_str,
-        })
+        }
+
+    with ThreadPoolExecutor(max_workers=phase2_workers) as executor:
+        futures = {}
+        for idx, meta in enumerate(image_meta):
+            futures[executor.submit(_process_single, idx, meta)] = idx
+
+        for future in as_completed(futures):
+            idx = futures[future]
+            results[idx] = future.result()  # raises on error
+
+            processed_count[0] += 1
+            # Report progress every 10 images
+            if job_prefix and total_images and processed_count[0] % 10 == 0:
+                done = images_done + processed_count[0]
+                write_status(job_prefix, "processing",
+                             f"Processing {done}/{total_images} images...")
 
     if not keep_filenames:
         write_photo_counter(prefix, number)
