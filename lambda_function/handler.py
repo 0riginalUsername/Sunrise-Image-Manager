@@ -208,24 +208,20 @@ def compress_image(image_bytes, quality=None):
         except Exception:
             exif_bytes = None
 
-        # Open, decode, and immediately close the source image so the
-        # original pixel buffer is freed before we create the RGB copy.
-        img = Image.open(io.BytesIO(image_bytes))
-        img.load()          # force full decode into memory
-        img = img.convert("RGB")  # original now unreferenced → GC-eligible
-        if "icc_profile" in img.info:
-            del img.info["icc_profile"]
-        if img.width > MAX_WIDTH:
-            scale = MAX_WIDTH / img.width
-            img = img.resize((MAX_WIDTH, int(img.height * scale)), Image.LANCZOS)
-        buf = io.BytesIO()
-        if exif_bytes:
-            img.save(buf, "JPEG", quality=q, exif=exif_bytes)
-        else:
-            img.save(buf, "JPEG", quality=q)
-        img.close()
-        buf.seek(0)
-        return buf.read(), "image/jpeg"
+        with Image.open(io.BytesIO(image_bytes)) as img:
+            img = img.convert("RGB")
+            if "icc_profile" in img.info:
+                del img.info["icc_profile"]
+            if img.width > MAX_WIDTH:
+                scale = MAX_WIDTH / img.width
+                img = img.resize((MAX_WIDTH, int(img.height * scale)), Image.LANCZOS)
+            buf = io.BytesIO()
+            if exif_bytes:
+                img.save(buf, "JPEG", quality=q, exif=exif_bytes)
+            else:
+                img.save(buf, "JPEG", quality=q)
+            buf.seek(0)
+            return buf.read(), "image/jpeg"
     except Exception as e:
         logger.error("Compression failed: %s", e)
         return image_bytes, "image/jpeg"
@@ -305,24 +301,58 @@ def generate_state_plane_csv(images_meta, output_prefix, type_str):
 # Position CSV parsing  (name, northing, easting, elevation)
 # ---------------------------------------------------------------------------
 def parse_position_csv(csv_text):
-    """Parse a position CSV into a dict keyed by lowercase name (no extension)."""
+    """Parse a position CSV into a dict keyed by lowercase name (no extension).
+
+    Supports common column-name variants (case-insensitive):
+      name / SetupName / setup_name / filename → image name
+      northing / Northing                      → northing
+      easting  / Easting                       → easting
+      elevation / Elevation / height / Height  → elevation
+    """
     positions = {}
     if not csv_text:
         return positions
     reader = csv.DictReader(io.StringIO(csv_text))
+    if reader.fieldnames is None:
+        return positions
+
+    # Build a case-insensitive lookup so column names like "SetupName",
+    # "Northing", etc. map to our canonical keys.
+    col_map = {}  # canonical_key → actual CSV header
+    name_variants = {"name", "setupname", "setup_name", "filename", "file_name", "imagename", "image_name", "point", "pointname", "point_name"}
+    northing_variants = {"northing", "north", "n", "y"}
+    easting_variants = {"easting", "east", "e", "x"}
+    elevation_variants = {"elevation", "elev", "height", "z", "altitude", "alt"}
+
+    for header in reader.fieldnames:
+        h = header.strip().lower().replace(" ", "")
+        if h in name_variants:
+            col_map["name"] = header
+        elif h in northing_variants:
+            col_map["northing"] = header
+        elif h in easting_variants:
+            col_map["easting"] = header
+        elif h in elevation_variants:
+            col_map["elevation"] = header
+
+    if "name" not in col_map:
+        logger.warning("Position CSV has no recognised name column (headers: %s)", reader.fieldnames)
+        return positions
+
     for row in reader:
-        name = row.get("name", "").strip()
+        name = row.get(col_map.get("name", ""), "").strip()
         if not name:
             continue
         name_key = name.rsplit(".", 1)[0].replace(" ", "_").lower()
         try:
             positions[name_key] = {
-                "northing": float(row.get("northing", 0)),
-                "easting": float(row.get("easting", 0)),
-                "elevation": float(row.get("elevation", 0)),
+                "northing": float(row.get(col_map.get("northing", ""), 0)),
+                "easting": float(row.get(col_map.get("easting", ""), 0)),
+                "elevation": float(row.get(col_map.get("elevation", ""), 0)),
             }
         except (ValueError, TypeError):
             continue
+    logger.info("Parsed %d positions from CSV (name col=%r)", len(positions), col_map.get("name"))
     return positions
 
 
