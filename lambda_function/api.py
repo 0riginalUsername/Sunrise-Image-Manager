@@ -63,6 +63,82 @@ def verify_password(password, stored_hash, stored_salt):
     return secrets.compare_digest(computed_hash, stored_hash)
 
 
+def _apr1_md5_verify(password, apr1_hash):
+    """Verify a password against an Apache $apr1$ (MD5) hash.
+
+    Supports legacy .htpasswd entries migrated from Apache Basic Auth.
+    The $apr1$ format is: $apr1$salt$hash
+    """
+    import struct
+
+    if not apr1_hash.startswith("$apr1$"):
+        return False
+    parts = apr1_hash.split("$")
+    # parts = ['', 'apr1', salt, hash]
+    if len(parts) != 4:
+        return False
+    salt = parts[2]
+    # APR1-MD5 custom itoa64 alphabet
+    itoa64 = "./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+
+    pw = password.encode("utf-8")
+    sl = salt.encode("utf-8")
+    magic = b"$apr1$"
+
+    ctx = hashlib.md5(pw + magic + sl)
+    alt = hashlib.md5(pw + sl + pw).digest()
+
+    plen = len(pw)
+    i = plen
+    while i > 0:
+        ctx.update(alt[:min(16, i)])
+        i -= 16
+
+    i = plen
+    while i:
+        if i & 1:
+            ctx.update(b"\x00")
+        else:
+            ctx.update(pw[:1])
+        i >>= 1
+
+    result = ctx.digest()
+
+    for i in range(1000):
+        ctx2 = hashlib.md5()
+        if i & 1:
+            ctx2.update(pw)
+        else:
+            ctx2.update(result)
+        if i % 3:
+            ctx2.update(sl)
+        if i % 7:
+            ctx2.update(pw)
+        if i & 1:
+            ctx2.update(result)
+        else:
+            ctx2.update(pw)
+        result = ctx2.digest()
+
+    def _to64(v, n):
+        out = ""
+        for _ in range(n):
+            out += itoa64[v & 0x3F]
+            v >>= 6
+        return out
+
+    computed = (
+        _to64((result[0] << 16) | (result[6] << 8) | result[12], 4)
+        + _to64((result[1] << 16) | (result[7] << 8) | result[13], 4)
+        + _to64((result[2] << 16) | (result[8] << 8) | result[14], 4)
+        + _to64((result[3] << 16) | (result[9] << 8) | result[15], 4)
+        + _to64((result[4] << 16) | (result[10] << 8) | result[5], 4)
+        + _to64(result[11], 2)
+    )
+
+    return secrets.compare_digest(computed, parts[3])
+
+
 def lambda_handler(event, context):
     """Route API Gateway requests to the correct handler."""
     http_method = event.get("httpMethod", "")
@@ -511,7 +587,12 @@ def handle_project_auth_verify(event):
     try:
         obj = s3.get_object(Bucket=BUCKET, Key=auth_key)
         auth_data = json.loads(obj["Body"].read().decode("utf-8"))
-        if verify_password(password, auth_data["hash"], auth_data["salt"]):
+        # Support legacy $apr1$ hashes migrated from .htpasswd files
+        if auth_data.get("format") == "apr1":
+            authorized = _apr1_md5_verify(password, auth_data["apr1_hash"])
+        else:
+            authorized = verify_password(password, auth_data["hash"], auth_data["salt"])
+        if authorized:
             return cors_response(200, {"authorized": True})
         else:
             return cors_response(200, {"authorized": False})
