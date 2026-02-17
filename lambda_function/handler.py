@@ -228,6 +228,10 @@ def compress_image(image_bytes, quality=None, max_width=None):
     Single-pass — no iterative retry.  Callers pick the right max_width
     for the image type (PANO_MAX_WIDTH or PHOTO_MAX_WIDTH).
 
+    Memory-conscious: avoids the ``convert("RGB")`` copy when the image
+    is already RGB, and explicitly closes intermediate images so peak
+    usage stays ≈ raw_bytes + one_decoded_buffer + one_output_buffer.
+
     Returns (compressed_bytes, content_type).
     """
     q = quality or DEFAULT_JPEG_QUALITY
@@ -236,19 +240,27 @@ def compress_image(image_bytes, quality=None, max_width=None):
 
     try:
         img = Image.open(io.BytesIO(image_bytes))
-        img = img.convert("RGB")
+        # Only convert if not already RGB (avoids a full-copy of the pixel buffer)
+        if img.mode != "RGB":
+            converted = img.convert("RGB")
+            img.close()
+            img = converted
         if "icc_profile" in img.info:
             del img.info["icc_profile"]
     except Exception as e:
         logger.error("Failed to open image for compression: %s", e)
         return image_bytes, "image/jpeg"
 
-    if img.width > mw:
-        scale = mw / img.width
-        img = img.resize((mw, int(img.height * scale)), Image.LANCZOS)
+    try:
+        if img.width > mw:
+            scale = mw / img.width
+            resized = img.resize((mw, int(img.height * scale)), Image.LANCZOS)
+            img.close()          # free the full-res buffer before proceeding
+            img = resized
 
-    out = _save_jpeg(img, q, exif_bytes)
-    img.close()
+        out = _save_jpeg(img, q, exif_bytes)
+    finally:
+        img.close()
     return out, "image/jpeg"
 
 
@@ -915,14 +927,14 @@ def lambda_handler(event, context):
 _SCAN_WORKERS = 10
 
 # Phase 2 (compress+upload) is memory-heavy.  During compression each worker
-# holds: raw JPEG bytes + fully-decoded RGB pixel buffer (~8× the file size).
-# For 30 MB images that's ~270 MB per worker.  Lambda has 3008 MB; keeping
-# ~600 MB headroom means we can safely run  floor(2400 / per_worker_mb)
-# workers.  _max_phase2_workers() computes this after Phase 1 measures sizes.
-_MAX_PHASE2_WORKERS = 8           # upper bound (small files)
-_LAMBDA_AVAILABLE_MB = 2400       # 3008 minus runtime/Python overhead
-_BYTES_PER_PIXEL = 3              # RGB
-_JPEG_DECODE_RATIO = 8             # 1 MB JPEG ≈ 4 MB pixels, ×2 for convert("RGB") headroom
+# holds: raw JPEG bytes + fully-decoded RGB pixel buffer + resized copy.
+# For a 30 MB panorama the decoded pixels alone are ~216 MB, and during
+# convert/resize both old and new buffers coexist briefly (~430 MB).
+# Lambda has 3008 MB; keeping ~1000 MB headroom for runtime / GC / S3
+# buffers means we can safely run  floor(2000 / per_worker_mb)  workers.
+_MAX_PHASE2_WORKERS = 4           # cap — even small files don't need more
+_LAMBDA_AVAILABLE_MB = 2000       # 3008 minus generous runtime headroom
+_JPEG_DECODE_RATIO = 15           # 1 MB JPEG ≈ 8 MB pixels; ×2 for resize peak
 
 
 def _max_phase2_workers(avg_file_bytes):
@@ -1042,12 +1054,18 @@ def process_image_set(bucket, s3_keys, output_prefix, client_name, project_name,
         obj = s3.get_object(Bucket=bucket, Key=meta["s3_key"])
         img_bytes = obj["Body"].read()
 
-        # Compress (or keep original)
+        # Compress (or keep original).
+        # Wrapped in try/except so a single bad image doesn't kill the batch.
         mw = PANO_MAX_WIDTH if type_str == "Pano" else PHOTO_MAX_WIDTH
         if keep_originals:
             output_bytes, content_type = img_bytes, "image/jpeg"
         else:
-            output_bytes, content_type = compress_image(img_bytes, quality=jpeg_quality, max_width=mw)
+            try:
+                output_bytes, content_type = compress_image(img_bytes, quality=jpeg_quality, max_width=mw)
+            except Exception as comp_err:
+                logger.error("Compression failed for %s, uploading original: %s",
+                             meta["orig_filename"], comp_err)
+                output_bytes, content_type = img_bytes, "image/jpeg"
         del img_bytes  # free raw bytes
 
         # Upload compressed image to S3
