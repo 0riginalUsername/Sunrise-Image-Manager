@@ -878,10 +878,9 @@ def process_image_set(bucket, s3_keys, output_prefix, client_name, project_name,
         return []
     csv_positions = csv_positions or {}
 
-    # Use a single ThreadPoolExecutor for BOTH phases so the same threads
-    # (and their thread-local S3 clients) are reused.  Creating separate
-    # executors per phase leaked boto3 clients that weren't garbage-collected
-    # before the next executor spun up, exhausting file descriptors.
+    # ── Phase 1: Parallel metadata scan ──────────────────────────────────
+    # Download each image, extract EXIF (GPS/datetime), discard bytes.
+    # Separate executor from Phase 2 to ensure clean thread state.
     image_meta = [None] * len(s3_keys)
 
     def _scan_metadata(idx, key):
@@ -913,6 +912,42 @@ def process_image_set(bucket, s3_keys, output_prefix, client_name, project_name,
             "date_time": date_time,
             "sort_dt": dt,
         }
+
+    with ThreadPoolExecutor(max_workers=_PARALLEL_WORKERS) as scan_executor:
+        futures = {}
+        for idx, key in enumerate(s3_keys):
+            futures[scan_executor.submit(_scan_metadata, idx, key)] = idx
+        for future in as_completed(futures):
+            idx = futures[future]
+            try:
+                image_meta[idx] = future.result()
+            except Exception as e:
+                logger.warning("Failed to read metadata for %s: %s", s3_keys[idx], e)
+
+    image_meta = [m for m in image_meta if m is not None]
+
+    # Sort by datetime
+    image_meta.sort(key=lambda x: x["sort_dt"])
+
+    # Assign sequential filenames (must be done before parallel phase)
+    if not keep_filenames:
+        prefix, number = read_photo_counter()
+
+    for meta in image_meta:
+        if keep_filenames:
+            meta["final_name"] = meta["orig_filename"]
+            meta["base_name"] = meta["final_name"].rsplit(".", 1)[0]
+        else:
+            number += 1
+            if number > 999:
+                number = 1
+                prefix = increment_prefix(prefix)
+            meta["final_name"] = f"{prefix}{number:03d}.jpg"
+            meta["base_name"] = f"{prefix}{number:03d}"
+
+    # ── Phase 2: Parallel download → compress → upload ──────────────────
+    results = [None] * len(image_meta)
+    processed_count = [0]  # mutable counter for progress reporting
 
     def _process_single(idx, meta):
         """Download, compress, render HTML, and upload a single image."""
@@ -959,48 +994,12 @@ def process_image_set(bucket, s3_keys, output_prefix, client_name, project_name,
         }
 
     with ThreadPoolExecutor(max_workers=_PARALLEL_WORKERS) as executor:
-        # ── Phase 1: Parallel metadata scan ──────────────────────────────
         futures = {}
-        for idx, key in enumerate(s3_keys):
-            futures[executor.submit(_scan_metadata, idx, key)] = idx
+        for idx, meta in enumerate(image_meta):
+            futures[executor.submit(_process_single, idx, meta)] = idx
+
         for future in as_completed(futures):
             idx = futures[future]
-            try:
-                image_meta[idx] = future.result()
-            except Exception as e:
-                logger.warning("Failed to read metadata for %s: %s", s3_keys[idx], e)
-
-        image_meta = [m for m in image_meta if m is not None]
-
-        # Sort by datetime
-        image_meta.sort(key=lambda x: x["sort_dt"])
-
-        # Assign sequential filenames (must be done before parallel phase)
-        if not keep_filenames:
-            prefix, number = read_photo_counter()
-
-        for meta in image_meta:
-            if keep_filenames:
-                meta["final_name"] = meta["orig_filename"]
-                meta["base_name"] = meta["final_name"].rsplit(".", 1)[0]
-            else:
-                number += 1
-                if number > 999:
-                    number = 1
-                    prefix = increment_prefix(prefix)
-                meta["final_name"] = f"{prefix}{number:03d}.jpg"
-                meta["base_name"] = f"{prefix}{number:03d}"
-
-        # ── Phase 2: Parallel download → compress → upload ───────────────
-        results = [None] * len(image_meta)
-        processed_count = [0]  # mutable counter for progress reporting
-
-        phase2_futures = {}
-        for idx, meta in enumerate(image_meta):
-            phase2_futures[executor.submit(_process_single, idx, meta)] = idx
-
-        for future in as_completed(phase2_futures):
-            idx = phase2_futures[future]
             results[idx] = future.result()  # raises on error
 
             processed_count[0] += 1
