@@ -214,6 +214,36 @@
             font-weight: 600;
         }
 
+        /* ── Scanning overlay (shown while registering large drops) ── */
+        .drop-zone-overlay {
+            position: absolute;
+            inset: 0;
+            background: rgba(255,255,255,0.92);
+            border-radius: 12px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 10;
+        }
+        .drop-zone-overlay .scan-spinner {
+            width: 36px;
+            height: 36px;
+            border: 4px solid #e9ecef;
+            border-top-color: var(--sunrise-navy);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin-bottom: 12px;
+        }
+        .drop-zone-overlay .scan-text {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--sunrise-navy);
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
         /* ── Process button ── */
         .btn-process {
             display: block;

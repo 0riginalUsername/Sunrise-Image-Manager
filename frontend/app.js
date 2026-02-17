@@ -466,12 +466,66 @@ function classifyImage(file) {
     });
 }
 
-async function classifyFiles(files) {
-    const entries = files.map(f => ({ file: f, type: 'classifying' }));
-    // Classify all in parallel
-    const types = await Promise.all(files.map(f => classifyImage(f)));
-    types.forEach((type, i) => { entries[i].type = type; });
+/**
+ * Classify files in batches so the main thread can repaint between chunks.
+ * @param {File[]} files
+ * @param {(done:number, total:number)=>void} [onProgress]
+ * @returns {Promise<{file:File, type:string}[]>}
+ */
+async function classifyFiles(files, onProgress) {
+    const BATCH = 50;
+    const entries = [];
+    for (let i = 0; i < files.length; i += BATCH) {
+        const batch = files.slice(i, i + BATCH);
+        const types = await Promise.all(batch.map(f => classifyImage(f)));
+        for (let j = 0; j < batch.length; j++) {
+            entries.push({ file: batch[j], type: types[j] });
+        }
+        if (onProgress) onProgress(entries.length, files.length);
+        // Yield to the browser so it can repaint the overlay text
+        await new Promise(r => requestAnimationFrame(r));
+    }
     return entries;
+}
+
+// ── Scanning overlay helpers ─────────────────────────────────────────────
+function showScanOverlay(done, total) {
+    let overlay = dropZone.querySelector('.drop-zone-overlay');
+    if (!overlay) {
+        overlay = document.createElement('div');
+        overlay.className = 'drop-zone-overlay';
+        overlay.innerHTML = '<div class="scan-spinner"></div><div class="scan-text"></div>';
+        dropZone.appendChild(overlay);
+    }
+    overlay.querySelector('.scan-text').textContent =
+        `Registering images\u2026 ${done} / ${total}`;
+}
+
+function hideScanOverlay() {
+    const overlay = dropZone.querySelector('.drop-zone-overlay');
+    if (overlay) overlay.remove();
+}
+
+/**
+ * Shared handler: filter JPEGs, show scanning overlay, classify in batches,
+ * then update the file list.
+ */
+async function handleIncomingFiles(fileList) {
+    const jpgs = Array.from(fileList).filter(f =>
+        f.name.toLowerCase().endsWith('.jpg') || f.name.toLowerCase().endsWith('.jpeg')
+    );
+    if (!jpgs.length) return;
+
+    showScanOverlay(0, jpgs.length);
+    try {
+        const newEntries = await classifyFiles(jpgs, (done, total) => {
+            showScanOverlay(done, total);
+        });
+        imageFiles = imageFiles.concat(newEntries);
+        renderFileList();
+    } finally {
+        hideScanOverlay();
+    }
 }
 
 // ── Drop zone wiring ────────────────────────────────────────────────────
@@ -484,25 +538,11 @@ dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover
 
 dropZone.addEventListener('drop', async e => {
     dropZone.classList.remove('dragover');
-    const dropped = Array.from(e.dataTransfer.files).filter(f =>
-        f.name.toLowerCase().endsWith('.jpg') || f.name.toLowerCase().endsWith('.jpeg')
-    );
-    if (dropped.length) {
-        const newEntries = await classifyFiles(dropped);
-        imageFiles = imageFiles.concat(newEntries);
-        renderFileList();
-    }
+    await handleIncomingFiles(e.dataTransfer.files);
 });
 
 fileInput.addEventListener('change', async () => {
-    const picked = Array.from(fileInput.files).filter(f =>
-        f.name.toLowerCase().endsWith('.jpg') || f.name.toLowerCase().endsWith('.jpeg')
-    );
-    if (picked.length) {
-        const newEntries = await classifyFiles(picked);
-        imageFiles = imageFiles.concat(newEntries);
-        renderFileList();
-    }
+    await handleIncomingFiles(fileInput.files);
 });
 
 // ── File list rendering ─────────────────────────────────────────────────
