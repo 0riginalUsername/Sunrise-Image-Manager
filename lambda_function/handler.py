@@ -891,11 +891,11 @@ _SCAN_WORKERS = 10
 
 # Phase 2 (compress+upload) is memory-heavy.  During compression each worker
 # holds: raw JPEG bytes + fully-decoded RGB pixel buffer (~8× the file size).
-# For 30 MB images that's ~270 MB per worker.  Lambda has 3 008 MB; keeping
-# ~600 MB headroom means we can safely run  floor(2400 / per_worker_mb)
+# For 30 MB images that's ~270 MB per worker.  Lambda has 10 240 MB; keeping
+# ~640 MB headroom means we can safely run  floor(9600 / per_worker_mb)
 # workers.  _max_phase2_workers() computes this after Phase 1 measures sizes.
-_MAX_PHASE2_WORKERS = 10          # upper bound (small files)
-_LAMBDA_AVAILABLE_MB = 2400       # 3008 minus runtime/Python overhead
+_MAX_PHASE2_WORKERS = 20          # upper bound (small files)
+_LAMBDA_AVAILABLE_MB = 9600       # 10240 minus runtime/Python overhead
 _BYTES_PER_PIXEL = 3              # RGB
 _JPEG_DECODE_RATIO = 8             # 1 MB JPEG ≈ 4 MB pixels, ×2 for convert("RGB") headroom
 

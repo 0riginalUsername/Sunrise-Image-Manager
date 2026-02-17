@@ -7,7 +7,7 @@ Description: >
 Globals:
   Function:
     Timeout: 900
-    MemorySize: 3008
+    MemorySize: 10240
     Runtime: python3.11
 
 Parameters:
