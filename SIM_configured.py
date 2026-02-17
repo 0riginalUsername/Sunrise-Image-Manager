@@ -19,6 +19,7 @@ import os
 import sys
 import re
 import json
+import gc
 import shutil
 import threading
 import time
@@ -378,10 +379,13 @@ def compress_image(input_image_path: Path, remote_dir, quality=None):
 # --------------------
 # FILE PROCESSING WORKFLOW
 # --------------------
+_BATCH_SIZE = 50
+
 def process_image_set(files, client_name, project_name, file_dt, remote_dir, employee_name, type_str):
     """
     Copies images to temp, renames them, compresses, extracts metadata,
     and returns a dict of all relevant info per image.
+    Processes in batches of _BATCH_SIZE to prevent memory stalls on large sets.
     """
     temp_dir = safe_mkdir(TEMP_ROOT / type_str)
     for file in temp_dir.iterdir():
@@ -395,54 +399,69 @@ def process_image_set(files, client_name, project_name, file_dt, remote_dir, emp
         logging.warning(f"No images found in {temp_dir}")
         return {}
 
-    # Sort by EXIF datetime, fallback to file time
+    # Phase 1: Extract metadata in batches
     img_meta_list = []
-    for file in image_files:
-        lat, lon, alt, date_time = extract_image_metadata(file)
-        if date_time:
-            try:
-                dt = datetime.strptime(date_time, "%Y:%m:%d %H:%M:%S")
-            except Exception:
+    for batch_start in range(0, len(image_files), _BATCH_SIZE):
+        batch = image_files[batch_start:batch_start + _BATCH_SIZE]
+        logging.info(f"Scanning metadata batch {batch_start // _BATCH_SIZE + 1} "
+                     f"({batch_start + 1}-{min(batch_start + len(batch), len(image_files))} of {len(image_files)})")
+        for file in batch:
+            lat, lon, alt, date_time = extract_image_metadata(file)
+            if date_time:
+                try:
+                    dt = datetime.strptime(date_time, "%Y:%m:%d %H:%M:%S")
+                except Exception:
+                    dt = datetime.fromtimestamp(file.stat().st_mtime)
+            else:
                 dt = datetime.fromtimestamp(file.stat().st_mtime)
-        else:
-            dt = datetime.fromtimestamp(file.stat().st_mtime)
-        img_meta_list.append((file, lat, lon, alt, date_time, dt))
+            img_meta_list.append((file, lat, lon, alt, date_time, dt))
+        gc.collect()
 
     img_meta_list.sort(key=lambda x: x[5])
-    renamed_images = {}
+
+    # Rename all files sequentially (must be done before batched compression)
     photo_prefix, photo_number = read_photo_counter(PHOTO_COUNTER_PATH)
-
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        futures = {}
-        for idx, (file, lat, lon, alt, date_time, dt) in enumerate(img_meta_list, start=1):
-            photo_number += 1
-            if photo_number > 999:
-                photo_number = 1
-                photo_prefix = increment_prefix(photo_prefix)
-            ext = file.suffix.lower()
-            final_name = f"{photo_prefix}{photo_number:03d}{ext}"
-            final_path = file.parent / final_name
-            if final_path.exists():
-                final_path.unlink()
-            file.rename(final_path)
-            futures[executor.submit(compress_image, final_path, remote_dir, DEFAULT_JPEG_QUALITY)] = (
-                final_name, str(final_path), lat, lon, alt, date_time
-            )
-
+    rename_list = []
+    for idx, (file, lat, lon, alt, date_time, dt) in enumerate(img_meta_list, start=1):
+        photo_number += 1
+        if photo_number > 999:
+            photo_number = 1
+            photo_prefix = increment_prefix(photo_prefix)
+        ext = file.suffix.lower()
+        final_name = f"{photo_prefix}{photo_number:03d}{ext}"
+        final_path = file.parent / final_name
+        if final_path.exists():
+            final_path.unlink()
+        file.rename(final_path)
+        rename_list.append((final_name, final_path, lat, lon, alt, date_time))
     write_photo_counter(PHOTO_COUNTER_PATH, photo_prefix, photo_number)
 
-    for future in as_completed(futures):
-        final_name, final_path, lat, lon, alt, date_time = futures[future]
-        compressed_path = future.result()
-        renamed_images[final_name] = {
-            "base_name": final_name,
-            "full_path": final_path,
-            "compressed_path": compressed_path,
-            "lat": lat,
-            "lon": lon,
-            "alt": alt,
-            "date_time": date_time,
-        }
+    # Phase 2: Compress in batches of _BATCH_SIZE
+    renamed_images = {}
+    for batch_start in range(0, len(rename_list), _BATCH_SIZE):
+        batch = rename_list[batch_start:batch_start + _BATCH_SIZE]
+        logging.info(f"Compressing batch {batch_start // _BATCH_SIZE + 1} "
+                     f"({batch_start + 1}-{min(batch_start + len(batch), len(rename_list))} of {len(rename_list)})")
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = {}
+            for final_name, final_path, lat, lon, alt, date_time in batch:
+                futures[executor.submit(compress_image, final_path, remote_dir, DEFAULT_JPEG_QUALITY)] = (
+                    final_name, str(final_path), lat, lon, alt, date_time
+                )
+            for future in as_completed(futures):
+                final_name, final_path, lat, lon, alt, date_time = futures[future]
+                compressed_path = future.result()
+                renamed_images[final_name] = {
+                    "base_name": final_name,
+                    "full_path": final_path,
+                    "compressed_path": compressed_path,
+                    "lat": lat,
+                    "lon": lon,
+                    "alt": alt,
+                    "date_time": date_time,
+                }
+        gc.collect()
+
     return renamed_images
 
 # --------------------
