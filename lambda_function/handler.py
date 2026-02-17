@@ -26,6 +26,8 @@ from decimal import Decimal, getcontext
 from email.message import EmailMessage
 from pathlib import Path
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 import boto3
 import piexif
 from PIL import Image, ExifTags
@@ -734,13 +736,16 @@ def lambda_handler(event, context):
         # Parse position CSV into lookup dict
         csv_positions = parse_position_csv(position_csv)
 
-        # Auto-classify unclassified images by aspect ratio
+        # Auto-classify unclassified images by aspect ratio.
+        # Cache downloaded bytes so process_image_set can skip re-downloading.
+        prefetched = {}  # s3_key -> bytes
         if image_keys:
             logger.info("Auto-classifying %d unclassified images", len(image_keys))
             for key in image_keys:
                 try:
                     img_obj = s3.get_object(Bucket=bucket, Key=key)
                     img_bytes = img_obj["Body"].read()
+                    prefetched[key] = img_bytes
                     img_type = classify_image_type(img_bytes)
                     if img_type == "pano":
                         pano_keys.append(key)
@@ -762,10 +767,13 @@ def lambda_handler(event, context):
             img_template_str = load_template_from_s3(IMG_TEMPLATE_KEY)
 
             # Process panos and photos
+            total_images = len(pano_keys) + len(photo_keys)
             pano_meta = process_image_set(bucket, pano_keys, output_prefix, client_name, project_name, file_dt, "Pano", pano_template_str,
-                                          keep_filenames=keep_filenames, keep_originals=keep_originals, jpeg_quality=jpeg_quality, csv_positions=csv_positions)
+                                          keep_filenames=keep_filenames, keep_originals=keep_originals, jpeg_quality=jpeg_quality, csv_positions=csv_positions,
+                                          prefetched=prefetched, job_prefix=job_prefix, total_images=total_images, images_done=0)
             photo_meta = process_image_set(bucket, photo_keys, output_prefix, client_name, project_name, file_dt, "Photo", img_template_str,
-                                           keep_filenames=keep_filenames, keep_originals=keep_originals, jpeg_quality=jpeg_quality, csv_positions=csv_positions)
+                                           keep_filenames=keep_filenames, keep_originals=keep_originals, jpeg_quality=jpeg_quality, csv_positions=csv_positions,
+                                           prefetched=prefetched, job_prefix=job_prefix, total_images=total_images, images_done=len(pano_keys))
 
             # Generate CSVs
             first_link = None
@@ -845,22 +853,39 @@ def lambda_handler(event, context):
     return {"statusCode": 200, "body": "OK"}
 
 
+def _upload_to_s3(bucket, key, body, content_type):
+    """Upload a single object to S3 (used by ThreadPoolExecutor)."""
+    s3.put_object(Bucket=bucket, Key=key, Body=body, ContentType=content_type)
+
+
+# Max parallel S3 uploads — balances throughput vs. Lambda memory/connections
+_S3_UPLOAD_WORKERS = 10
+
+
 def process_image_set(bucket, s3_keys, output_prefix, client_name, project_name, file_dt, type_str, template_str,
-                      keep_filenames=False, keep_originals=False, jpeg_quality=None, csv_positions=None):
+                      keep_filenames=False, keep_originals=False, jpeg_quality=None, csv_positions=None,
+                      prefetched=None, job_prefix=None, total_images=0, images_done=0):
     """
     Download raw images from S3, extract metadata, rename, compress, generate HTML,
     upload processed outputs back to S3. Returns list of metadata dicts.
+
+    Uses prefetched byte cache to avoid re-downloading already-classified images,
+    and parallelizes S3 uploads via ThreadPoolExecutor.
     """
     if not s3_keys:
         return []
     csv_positions = csv_positions or {}
+    prefetched = prefetched or {}
 
-    # Download and collect metadata
+    # Download and collect metadata (use cached bytes when available)
     raw_images = []
     for key in s3_keys:
         try:
-            obj = s3.get_object(Bucket=bucket, Key=key)
-            img_bytes = obj["Body"].read()
+            if key in prefetched:
+                img_bytes = prefetched.pop(key)  # pop to free memory early
+            else:
+                obj = s3.get_object(Bucket=bucket, Key=key)
+                img_bytes = obj["Body"].read()
             lat, lon, alt, date_time = extract_image_metadata(img_bytes)
             if date_time:
                 try:
@@ -901,67 +926,76 @@ def process_image_set(bucket, s3_keys, output_prefix, client_name, project_name,
         prefix, number = read_photo_counter()
 
     results = []
+    upload_futures = []
 
-    for img_data in raw_images:
-        if keep_filenames:
-            final_name = img_data["orig_filename"]
-            base_name = final_name.rsplit(".", 1)[0]
-        else:
-            number += 1
-            if number > 999:
-                number = 1
-                prefix = increment_prefix(prefix)
-            final_name = f"{prefix}{number:03d}.jpg"
-            base_name = f"{prefix}{number:03d}"
+    with ThreadPoolExecutor(max_workers=_S3_UPLOAD_WORKERS) as executor:
+        for i, img_data in enumerate(raw_images):
+            if keep_filenames:
+                final_name = img_data["orig_filename"]
+                base_name = final_name.rsplit(".", 1)[0]
+            else:
+                number += 1
+                if number > 999:
+                    number = 1
+                    prefix = increment_prefix(prefix)
+                final_name = f"{prefix}{number:03d}.jpg"
+                base_name = f"{prefix}{number:03d}"
 
-        # Compress (or keep original)
-        if keep_originals:
-            output_bytes, content_type = img_data["bytes"], "image/jpeg"
-        else:
-            output_bytes, content_type = compress_image(img_data["bytes"], quality=jpeg_quality)
+            # Compress (or keep original)
+            if keep_originals:
+                output_bytes, content_type = img_data["bytes"], "image/jpeg"
+            else:
+                output_bytes, content_type = compress_image(img_data["bytes"], quality=jpeg_quality)
 
-        # Upload image to S3
-        img_key = f"{output_prefix}{final_name}"
-        s3.put_object(
-            Bucket=bucket,
-            Key=img_key,
-            Body=output_bytes,
-            ContentType=content_type,
-        )
+            # Free raw bytes now that we have compressed output
+            img_data["bytes"] = None
 
-        # Build metadata for CSV/HTML
-        dt_str = img_data.get("date_time")
-        try:
-            dt_obj = datetime.strptime(dt_str, "%Y:%m:%d %H:%M:%S") if dt_str else datetime.utcnow()
-        except Exception:
-            dt_obj = datetime.utcnow()
-        converted_dt = dt_obj.strftime("%d-%b-%y %I:%M:%S%p")
+            # Upload image to S3 (parallel)
+            img_key = f"{output_prefix}{final_name}"
+            upload_futures.append(
+                executor.submit(_upload_to_s3, bucket, img_key, output_bytes, content_type)
+            )
 
-        # Render HTML viewer page
-        html_content = render_template_string(template_str, {
-            "TITLE": client_name,
-            "DESCRIPTION": file_dt,
-            "IMG": final_name,
-            "IMG_DATE": converted_dt,
-        })
-        html_key = f"{output_prefix}{base_name}.htm"
-        s3.put_object(
-            Bucket=bucket,
-            Key=html_key,
-            Body=html_content.encode("utf-8"),
-            ContentType="text/html",
-        )
+            # Build metadata for CSV/HTML
+            dt_str = img_data.get("date_time")
+            try:
+                dt_obj = datetime.strptime(dt_str, "%Y:%m:%d %H:%M:%S") if dt_str else datetime.utcnow()
+            except Exception:
+                dt_obj = datetime.utcnow()
+            converted_dt = dt_obj.strftime("%d-%b-%y %I:%M:%S%p")
 
-        results.append({
-            "base_name": final_name,
-            "lat": img_data["lat"],
-            "lon": img_data["lon"],
-            "alt": img_data["alt"],
-            "northing": img_data["northing"],
-            "easting": img_data["easting"],
-            "csv_elevation": img_data["csv_elevation"],
-            "date_time": dt_str,
-        })
+            # Render HTML viewer page
+            html_content = render_template_string(template_str, {
+                "TITLE": client_name,
+                "DESCRIPTION": file_dt,
+                "IMG": final_name,
+                "IMG_DATE": converted_dt,
+            })
+            html_key = f"{output_prefix}{base_name}.htm"
+            upload_futures.append(
+                executor.submit(_upload_to_s3, bucket, html_key, html_content.encode("utf-8"), "text/html")
+            )
+
+            results.append({
+                "base_name": final_name,
+                "lat": img_data["lat"],
+                "lon": img_data["lon"],
+                "alt": img_data["alt"],
+                "northing": img_data["northing"],
+                "easting": img_data["easting"],
+                "csv_elevation": img_data["csv_elevation"],
+                "date_time": dt_str,
+            })
+
+            # Report progress every 10 images
+            if job_prefix and total_images and (i + 1) % 10 == 0:
+                done = images_done + i + 1
+                write_status(job_prefix, "processing",
+                             f"Processing {done}/{total_images} images...")
+
+        # Wait for all uploads to finish and raise any errors
+        for future in as_completed(upload_futures):
+            future.result()  # raises if upload failed
 
     if not keep_filenames:
         write_photo_counter(prefix, number)

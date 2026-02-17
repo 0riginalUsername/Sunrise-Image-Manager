@@ -784,7 +784,7 @@ async function uploadFileToS3(presignedUrl, file) {
  */
 async function pollJobStatus(jobPrefix) {
     const POLL_INTERVAL = 3000;  // 3 seconds
-    const MAX_POLLS = 200;       // ~10 minutes max wait
+    const MAX_POLLS = 360;       // ~18 minutes max wait (Lambda timeout is 15 min)
 
     for (let i = 0; i < MAX_POLLS; i++) {
         await new Promise(r => setTimeout(r, POLL_INTERVAL));
