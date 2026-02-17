@@ -61,9 +61,9 @@ s3 = boto3.client("s3")
 BUCKET = os.environ.get("S3_BUCKET", "sunrise-image-manager")
 DOMAIN_BASE = os.environ.get("DOMAIN_BASE", "https://pano.seihds.com")
 DOMAIN_PREFIX = os.environ.get("DOMAIN_PREFIX", "/processed")
-MAX_WIDTH = int(os.environ.get("MAX_WIDTH", "4096"))
-DEFAULT_JPEG_QUALITY = int(os.environ.get("JPEG_QUALITY", "30"))
-MAX_FILE_BYTES = int(os.environ.get("MAX_FILE_BYTES", str(5 * 1024 * 1024)))  # 5 MB
+PANO_MAX_WIDTH = int(os.environ.get("PANO_MAX_WIDTH", "8192"))
+PHOTO_MAX_WIDTH = int(os.environ.get("PHOTO_MAX_WIDTH", "4096"))
+DEFAULT_JPEG_QUALITY = int(os.environ.get("JPEG_QUALITY", "10"))
 PANO_ASPECT_RATIO = float(os.environ.get("PANO_ASPECT_RATIO", "1.9"))
 COUNTER_KEY = os.environ.get("COUNTER_KEY", "state/photo_counter.json")
 EMAIL_HOST = os.environ.get("EMAIL_HOST", "")
@@ -222,19 +222,16 @@ def _save_jpeg(img, quality, exif_bytes):
     return buf.read()
 
 
-def compress_image(image_bytes, quality=None):
-    """Compress and resize image to fit under MAX_FILE_BYTES.
+def compress_image(image_bytes, quality=None, max_width=None):
+    """Resize to *max_width* and encode once at *quality*.
 
-    Strategy:
-      1. Down-scale to MAX_WIDTH if wider.
-      2. Encode at the requested quality.
-      3. If the result still exceeds MAX_FILE_BYTES, reduce quality in
-         steps of 5 (floor 10).  If quality 10 is still too large,
-         halve the dimensions and repeat.
+    Single-pass — no iterative retry.  Callers pick the right max_width
+    for the image type (PANO_MAX_WIDTH or PHOTO_MAX_WIDTH).
 
     Returns (compressed_bytes, content_type).
     """
     q = quality or DEFAULT_JPEG_QUALITY
+    mw = max_width or PHOTO_MAX_WIDTH
     exif_bytes = _extract_exif_bytes(image_bytes)
 
     try:
@@ -246,34 +243,12 @@ def compress_image(image_bytes, quality=None):
         logger.error("Failed to open image for compression: %s", e)
         return image_bytes, "image/jpeg"
 
-    # Initial down-scale to MAX_WIDTH
-    if img.width > MAX_WIDTH:
-        scale = MAX_WIDTH / img.width
-        img = img.resize((MAX_WIDTH, int(img.height * scale)), Image.LANCZOS)
+    if img.width > mw:
+        scale = mw / img.width
+        img = img.resize((mw, int(img.height * scale)), Image.LANCZOS)
 
-    # Iteratively compress until under MAX_FILE_BYTES
-    current_q = q
-    for _attempt in range(10):
-        out = _save_jpeg(img, current_q, exif_bytes)
-        if len(out) <= MAX_FILE_BYTES:
-            img.close()
-            return out, "image/jpeg"
-
-        if current_q > 10:
-            current_q = max(10, current_q - 5)
-        else:
-            # Quality is already minimal — shrink dimensions by 25 %
-            new_w = int(img.width * 0.75)
-            new_h = int(img.height * 0.75)
-            if new_w < 800:
-                break  # don't shrink below 800 px wide
-            img = img.resize((new_w, new_h), Image.LANCZOS)
-            current_q = q  # reset quality for the smaller image
-
-    # Best effort: return the last encoded result even if still over limit
+    out = _save_jpeg(img, q, exif_bytes)
     img.close()
-    logger.warning("Image still %.1f MB after compression (target %.1f MB)",
-                   len(out) / (1024 * 1024), MAX_FILE_BYTES / (1024 * 1024))
     return out, "image/jpeg"
 
 
@@ -1068,10 +1043,11 @@ def process_image_set(bucket, s3_keys, output_prefix, client_name, project_name,
         img_bytes = obj["Body"].read()
 
         # Compress (or keep original)
+        mw = PANO_MAX_WIDTH if type_str == "Pano" else PHOTO_MAX_WIDTH
         if keep_originals:
             output_bytes, content_type = img_bytes, "image/jpeg"
         else:
-            output_bytes, content_type = compress_image(img_bytes, quality=jpeg_quality)
+            output_bytes, content_type = compress_image(img_bytes, quality=jpeg_quality, max_width=mw)
         del img_bytes  # free raw bytes
 
         # Upload compressed image to S3

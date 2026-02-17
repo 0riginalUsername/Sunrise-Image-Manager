@@ -13,9 +13,9 @@
     "domain_prefix": "/processed"
   },
   "images": {
-    "max_width": 4096,
-    "compress_quality": 30,
-    "max_file_bytes": 5242880
+    "pano_max_width": 8192,
+    "photo_max_width": 4096,
+    "compress_quality": 10
   },
   "employees": [
     "Alan",
