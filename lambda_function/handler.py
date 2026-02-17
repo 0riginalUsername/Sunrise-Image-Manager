@@ -20,6 +20,7 @@ import json
 import csv
 import re
 import logging
+import threading
 import tempfile
 import smtplib
 from datetime import datetime
@@ -832,6 +833,22 @@ def lambda_handler(event, context):
 
         write_status(job_prefix, "processing", "Image processing started")
 
+        # Timeout watchdog: if Lambda is about to be killed, write an error
+        # status so the frontend doesn't hang forever on "processing".
+        _timeout_fired = threading.Event()
+        def _timeout_watchdog():
+            while not _timeout_fired.is_set():
+                remaining_ms = context.get_remaining_time_in_millis()
+                if remaining_ms < 30_000:  # 30 seconds left
+                    logger.error("Lambda timeout imminent (%d ms left), writing error status", remaining_ms)
+                    write_status(job_prefix, "error",
+                                 "Processing timed out — too many images for a single batch. "
+                                 "Try uploading fewer images at a time.")
+                    return
+                _timeout_fired.wait(timeout=10)  # check every 10 seconds
+        watchdog = threading.Thread(target=_timeout_watchdog, daemon=True)
+        watchdog.start()
+
         try:
             # Load templates once
             pano_template_str = load_template_from_s3(PANO_TEMPLATE_KEY)
@@ -913,10 +930,12 @@ def lambda_handler(event, context):
             register_client_project(office_name, client_name, project_name)
 
             landing_url = f"{DOMAIN_BASE}/processed/{office_name}/{client_name}/{project_name}/index.html"
+            _timeout_fired.set()  # stop watchdog
             write_status(job_prefix, "complete", "Processing finished", output_prefix, first_link or "", landing_url)
             logger.info("Job complete: %s", output_prefix)
 
         except Exception as e:
+            _timeout_fired.set()  # stop watchdog
             logger.error("Job failed: %s", e, exc_info=True)
             write_status(job_prefix, "error", str(e))
             raise
@@ -1017,6 +1036,9 @@ def process_image_set(bucket, s3_keys, output_prefix, client_name, project_name,
         batch_end = min(batch_start + _BATCH_SIZE, len(s3_keys))
         logger.info("Phase 1 metadata scan: batch %d–%d of %d",
                      batch_start + 1, batch_end, len(s3_keys))
+        if job_prefix and total_images:
+            write_status(job_prefix, "processing",
+                         f"Scanning metadata {batch_start + 1}-{batch_end} of {len(s3_keys)} {type_str} images...")
         with ThreadPoolExecutor(max_workers=_SCAN_WORKERS) as scan_executor:
             futures = {}
             for idx in range(batch_start, batch_end):
@@ -1118,6 +1140,11 @@ def process_image_set(bucket, s3_keys, output_prefix, client_name, project_name,
         batch_end = min(batch_start + _BATCH_SIZE, len(image_meta))
         logger.info("Phase 2 compress+upload: batch %d–%d of %d",
                      batch_start + 1, batch_end, len(image_meta))
+        if job_prefix and total_images:
+            done = images_done + processed_count[0]
+            write_status(job_prefix, "processing",
+                         f"Compressing batch {batch_start + 1}-{batch_end} of {len(image_meta)} "
+                         f"({done}/{total_images} total)...")
 
         with ThreadPoolExecutor(max_workers=phase2_workers) as executor:
             futures = {}
