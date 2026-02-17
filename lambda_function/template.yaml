@@ -270,7 +270,7 @@ Resources:
               Resource:
                 - !Sub "arn:aws:s3:::${S3BucketName}/state/*"
             - Effect: Allow
-              Action: s3:GetObject
+              Action: [s3:GetObject, s3:PutObject]
               Resource:
                 - !Sub "arn:aws:s3:::${S3BucketName}/processed/*"
       Events:

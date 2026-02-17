@@ -450,13 +450,17 @@ def _sync_index_protected_flag(office, client, project, is_protected):
     else:
         index_data.pop("protected", None)
 
-    s3.put_object(
-        Bucket=BUCKET, Key=index_key,
-        Body=json.dumps(index_data, indent=2).encode("utf-8"),
-        ContentType="application/json",
-        CacheControl="no-cache, no-store, must-revalidate",
-    )
-    logger.info("Synced protected=%s in index.json for %s/%s/%s", is_protected, office, client, project)
+    try:
+        s3.put_object(
+            Bucket=BUCKET, Key=index_key,
+            Body=json.dumps(index_data, indent=2).encode("utf-8"),
+            ContentType="application/json",
+            CacheControl="no-cache, no-store, must-revalidate",
+        )
+        logger.info("Synced protected=%s in index.json for %s/%s/%s", is_protected, office, client, project)
+    except Exception as e:
+        logger.error("Failed to sync protected flag in index.json for %s/%s/%s: %s",
+                     office, client, project, e)
 
 
 def handle_manage_project_password(event):
