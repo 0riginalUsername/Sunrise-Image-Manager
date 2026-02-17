@@ -663,7 +663,7 @@ async function startProcessing() {
         let uploaded = 0;
 
         // Upload with concurrency limit
-        const CONCURRENCY = 4;
+        const CONCURRENCY = 8;
         const queue = [...allUploads];
         const workers = [];
 

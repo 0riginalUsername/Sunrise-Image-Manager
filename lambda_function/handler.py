@@ -26,6 +26,7 @@ from decimal import Decimal, getcontext
 from email.message import EmailMessage
 from pathlib import Path
 
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import boto3
@@ -54,6 +55,17 @@ logger.setLevel(logging.INFO)
 logger.info("Geo layer available: %s", HAS_GEO)
 
 s3 = boto3.client("s3")
+
+# Thread-local S3 clients for safe use in ThreadPoolExecutor workers.
+# boto3 clients are not guaranteed thread-safe; each worker thread gets its own.
+_thread_local = threading.local()
+
+
+def _get_s3():
+    """Return a thread-local S3 client (creates one per thread on first call)."""
+    if not hasattr(_thread_local, "s3"):
+        _thread_local.s3 = boto3.client("s3")
+    return _thread_local.s3
 
 # ---------------------------------------------------------------------------
 # Environment / config  (set via Lambda env vars or SSM)
@@ -878,41 +890,54 @@ def process_image_set(bucket, s3_keys, output_prefix, client_name, project_name,
         return []
     csv_positions = csv_positions or {}
 
-    # ── Phase 1: Metadata scan ──────────────────────────────────────────
-    image_meta = []
-    for key in s3_keys:
-        try:
-            obj = s3.get_object(Bucket=bucket, Key=key)
-            img_bytes = obj["Body"].read()
+    # ── Phase 1: Parallel metadata scan ────────────────────────────────
+    # Each worker downloads one image, extracts EXIF, and discards the
+    # bytes immediately.  Peak memory: _PARALLEL_WORKERS × one image.
+    image_meta = [None] * len(s3_keys)
 
-            lat, lon, alt, date_time = extract_image_metadata(img_bytes)
-            # Discard image bytes — Phase 2 will re-download for processing
-            del img_bytes
+    def _scan_metadata(idx, key):
+        """Download one image, extract EXIF metadata, discard bytes."""
+        local_s3 = _get_s3()
+        obj = local_s3.get_object(Bucket=bucket, Key=key)
+        img_bytes = obj["Body"].read()
+        lat, lon, alt, date_time = extract_image_metadata(img_bytes)
+        del img_bytes
 
-            if date_time:
-                try:
-                    dt = datetime.strptime(date_time, "%Y:%m:%d %H:%M:%S")
-                except Exception:
-                    dt = datetime.utcnow()
-            else:
+        if date_time:
+            try:
+                dt = datetime.strptime(date_time, "%Y:%m:%d %H:%M:%S")
+            except Exception:
                 dt = datetime.utcnow()
+        else:
+            dt = datetime.utcnow()
 
-            orig_filename = key.rsplit("/", 1)[-1]
-            orig_base = orig_filename.rsplit(".", 1)[0].lower()
-            pos = csv_positions.get(orig_base)
+        orig_filename = key.rsplit("/", 1)[-1]
+        orig_base = orig_filename.rsplit(".", 1)[0].lower()
+        pos = csv_positions.get(orig_base)
 
-            image_meta.append({
-                "s3_key": key,
-                "orig_filename": orig_filename,
-                "lat": lat, "lon": lon, "alt": alt,
-                "northing": pos["northing"] if pos else None,
-                "easting": pos["easting"] if pos else None,
-                "csv_elevation": pos["elevation"] if pos else None,
-                "date_time": date_time,
-                "sort_dt": dt,
-            })
-        except Exception as e:
-            logger.warning("Failed to read metadata for %s: %s", key, e)
+        return {
+            "s3_key": key,
+            "orig_filename": orig_filename,
+            "lat": lat, "lon": lon, "alt": alt,
+            "northing": pos["northing"] if pos else None,
+            "easting": pos["easting"] if pos else None,
+            "csv_elevation": pos["elevation"] if pos else None,
+            "date_time": date_time,
+            "sort_dt": dt,
+        }
+
+    with ThreadPoolExecutor(max_workers=_PARALLEL_WORKERS) as executor:
+        futures = {}
+        for idx, key in enumerate(s3_keys):
+            futures[executor.submit(_scan_metadata, idx, key)] = idx
+        for future in as_completed(futures):
+            idx = futures[future]
+            try:
+                image_meta[idx] = future.result()
+            except Exception as e:
+                logger.warning("Failed to read metadata for %s: %s", s3_keys[idx], e)
+
+    image_meta = [m for m in image_meta if m is not None]
 
     # Sort by datetime
     image_meta.sort(key=lambda x: x["sort_dt"])
@@ -939,8 +964,10 @@ def process_image_set(bucket, s3_keys, output_prefix, client_name, project_name,
 
     def _process_single(idx, meta):
         """Download, compress, render HTML, and upload a single image."""
+        local_s3 = _get_s3()
+
         # Re-download from S3
-        obj = s3.get_object(Bucket=bucket, Key=meta["s3_key"])
+        obj = local_s3.get_object(Bucket=bucket, Key=meta["s3_key"])
         img_bytes = obj["Body"].read()
 
         # Compress (or keep original)
@@ -952,7 +979,7 @@ def process_image_set(bucket, s3_keys, output_prefix, client_name, project_name,
 
         # Upload compressed image to S3
         img_key = f"{output_prefix}{meta['final_name']}"
-        s3.put_object(Bucket=bucket, Key=img_key, Body=output_bytes, ContentType=content_type)
+        local_s3.put_object(Bucket=bucket, Key=img_key, Body=output_bytes, ContentType=content_type)
         del output_bytes  # free compressed bytes
 
         # Render and upload HTML viewer page
@@ -970,8 +997,8 @@ def process_image_set(bucket, s3_keys, output_prefix, client_name, project_name,
             "IMG_DATE": converted_dt,
         })
         html_key = f"{output_prefix}{meta['base_name']}.htm"
-        s3.put_object(Bucket=bucket, Key=html_key,
-                      Body=html_content.encode("utf-8"), ContentType="text/html")
+        local_s3.put_object(Bucket=bucket, Key=html_key,
+                            Body=html_content.encode("utf-8"), ContentType="text/html")
 
         return {
             "base_name": meta["final_name"],
