@@ -1031,6 +1031,10 @@ def process_image_set(bucket, s3_keys, output_prefix, client_name, project_name,
 
     image_meta = [m for m in image_meta if m is not None]
 
+    if job_prefix and total_images:
+        write_status(job_prefix, "processing",
+                     f"Metadata scanned for {len(image_meta)} images, compressing...")
+
     # Sort by datetime
     image_meta.sort(key=lambda x: x["sort_dt"])
 
@@ -1126,12 +1130,14 @@ def process_image_set(bucket, s3_keys, output_prefix, client_name, project_name,
 
             for future in as_completed(futures):
                 idx = futures[future]
-                results[idx] = future.result()  # raises on error
+                try:
+                    results[idx] = future.result()
+                except Exception as e:
+                    logger.error("Failed to process %s: %s", image_meta[idx]["orig_filename"], e, exc_info=True)
 
                 processed_count[0] += 1
-                # Report progress every 10 images
-                if job_prefix and total_images and processed_count[0] % 10 == 0:
-                    done = images_done + processed_count[0]
+                done = images_done + processed_count[0]
+                if job_prefix and total_images:
                     write_status(job_prefix, "processing",
                                  f"Processing {done}/{total_images} images...")
 
@@ -1142,5 +1148,6 @@ def process_image_set(bucket, s3_keys, output_prefix, client_name, project_name,
 
     if not keep_filenames:
         write_photo_counter(prefix, number)
+    results = [r for r in results if r is not None]
     logger.info("Processed %d %s images", len(results), type_str)
     return results
