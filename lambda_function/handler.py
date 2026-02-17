@@ -13,6 +13,7 @@ Architecture:
   processed/{office}/{client}/{project}/{datetime}/               <-- compressed images + HTML + CSV
 """
 
+import gc
 import os
 import io
 import json
@@ -936,6 +937,12 @@ _MAX_PHASE2_WORKERS = 4           # cap — even small files don't need more
 _LAMBDA_AVAILABLE_MB = 2000       # 3008 minus generous runtime headroom
 _JPEG_DECODE_RATIO = 15           # 1 MB JPEG ≈ 8 MB pixels; ×2 for resize peak
 
+# Batch size for chunked processing.  Both Phase 1 (metadata scan) and Phase 2
+# (compress+upload) process images in batches of this size instead of submitting
+# all images to the thread pool at once.  This prevents S3 connection-pool
+# exhaustion and keeps peak memory bounded when processing 100+ images.
+_BATCH_SIZE = 50
+
 
 def _max_phase2_workers(avg_file_bytes):
     """Return a safe worker count for Phase 2 based on average image size."""
@@ -969,9 +976,9 @@ def process_image_set(bucket, s3_keys, output_prefix, client_name, project_name,
         return []
     csv_positions = csv_positions or {}
 
-    # ── Phase 1: Parallel metadata scan ──────────────────────────────────
+    # ── Phase 1: Parallel metadata scan (chunked) ──────────────────────
     # Download each image, extract EXIF (GPS/datetime), discard bytes.
-    # Separate executor from Phase 2 to ensure clean thread state.
+    # Processed in batches of _BATCH_SIZE to avoid flooding S3 connections.
     image_meta = [None] * len(s3_keys)
 
     def _scan_metadata(idx, key):
@@ -1006,16 +1013,21 @@ def process_image_set(bucket, s3_keys, output_prefix, client_name, project_name,
             "sort_dt": dt,
         }
 
-    with ThreadPoolExecutor(max_workers=_SCAN_WORKERS) as scan_executor:
-        futures = {}
-        for idx, key in enumerate(s3_keys):
-            futures[scan_executor.submit(_scan_metadata, idx, key)] = idx
-        for future in as_completed(futures):
-            idx = futures[future]
-            try:
-                image_meta[idx] = future.result()
-            except Exception as e:
-                logger.warning("Failed to read metadata for %s: %s", s3_keys[idx], e)
+    for batch_start in range(0, len(s3_keys), _BATCH_SIZE):
+        batch_end = min(batch_start + _BATCH_SIZE, len(s3_keys))
+        logger.info("Phase 1 metadata scan: batch %d–%d of %d",
+                     batch_start + 1, batch_end, len(s3_keys))
+        with ThreadPoolExecutor(max_workers=_SCAN_WORKERS) as scan_executor:
+            futures = {}
+            for idx in range(batch_start, batch_end):
+                futures[scan_executor.submit(_scan_metadata, idx, s3_keys[idx])] = idx
+            for future in as_completed(futures):
+                idx = futures[future]
+                try:
+                    image_meta[idx] = future.result()
+                except Exception as e:
+                    logger.warning("Failed to read metadata for %s: %s", s3_keys[idx], e)
+        gc.collect()
 
     image_meta = [m for m in image_meta if m is not None]
 
@@ -1038,12 +1050,15 @@ def process_image_set(bucket, s3_keys, output_prefix, client_name, project_name,
             meta["final_name"] = f"{prefix}{number:03d}.jpg"
             meta["base_name"] = f"{prefix}{number:03d}"
 
-    # ── Phase 2: Parallel download → compress → upload ──────────────────
+    # ── Phase 2: Parallel download → compress → upload (chunked) ────────
     # Choose worker count based on average file size measured in Phase 1.
+    # Images are processed in batches of _BATCH_SIZE so that each batch gets
+    # a fresh ThreadPoolExecutor and an explicit gc.collect() between batches,
+    # preventing S3 connection-pool exhaustion and unbounded memory growth.
     avg_file_bytes = (sum(m["file_size"] for m in image_meta) / len(image_meta)) if image_meta else 0
     phase2_workers = _max_phase2_workers(avg_file_bytes)
-    logger.info("Phase 2: %d images, avg %.1f MB, using %d workers",
-                len(image_meta), avg_file_bytes / (1024 * 1024), phase2_workers)
+    logger.info("Phase 2: %d images, avg %.1f MB, using %d workers, batch size %d",
+                len(image_meta), avg_file_bytes / (1024 * 1024), phase2_workers, _BATCH_SIZE)
 
     results = [None] * len(image_meta)
     processed_count = [0]  # mutable counter for progress reporting
@@ -1099,21 +1114,31 @@ def process_image_set(bucket, s3_keys, output_prefix, client_name, project_name,
             "date_time": dt_str,
         }
 
-    with ThreadPoolExecutor(max_workers=phase2_workers) as executor:
-        futures = {}
-        for idx, meta in enumerate(image_meta):
-            futures[executor.submit(_process_single, idx, meta)] = idx
+    for batch_start in range(0, len(image_meta), _BATCH_SIZE):
+        batch_end = min(batch_start + _BATCH_SIZE, len(image_meta))
+        logger.info("Phase 2 compress+upload: batch %d–%d of %d",
+                     batch_start + 1, batch_end, len(image_meta))
 
-        for future in as_completed(futures):
-            idx = futures[future]
-            results[idx] = future.result()  # raises on error
+        with ThreadPoolExecutor(max_workers=phase2_workers) as executor:
+            futures = {}
+            for idx in range(batch_start, batch_end):
+                futures[executor.submit(_process_single, idx, image_meta[idx])] = idx
 
-            processed_count[0] += 1
-            # Report progress every 10 images
-            if job_prefix and total_images and processed_count[0] % 10 == 0:
-                done = images_done + processed_count[0]
-                write_status(job_prefix, "processing",
-                             f"Processing {done}/{total_images} images...")
+            for future in as_completed(futures):
+                idx = futures[future]
+                results[idx] = future.result()  # raises on error
+
+                processed_count[0] += 1
+                # Report progress every 10 images
+                if job_prefix and total_images and processed_count[0] % 10 == 0:
+                    done = images_done + processed_count[0]
+                    write_status(job_prefix, "processing",
+                                 f"Processing {done}/{total_images} images...")
+
+        # Free memory between batches — the executor's threads hold references
+        # to S3 response objects and byte buffers; tearing down the pool and
+        # running gc.collect() reclaims them before the next batch starts.
+        gc.collect()
 
     if not keep_filenames:
         write_photo_counter(prefix, number)
