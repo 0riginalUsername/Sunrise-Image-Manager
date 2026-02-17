@@ -61,8 +61,9 @@ s3 = boto3.client("s3")
 BUCKET = os.environ.get("S3_BUCKET", "sunrise-image-manager")
 DOMAIN_BASE = os.environ.get("DOMAIN_BASE", "https://pano.seihds.com")
 DOMAIN_PREFIX = os.environ.get("DOMAIN_PREFIX", "/processed")
-MAX_WIDTH = int(os.environ.get("MAX_WIDTH", "8192"))
+MAX_WIDTH = int(os.environ.get("MAX_WIDTH", "4096"))
 DEFAULT_JPEG_QUALITY = int(os.environ.get("JPEG_QUALITY", "30"))
+MAX_FILE_BYTES = int(os.environ.get("MAX_FILE_BYTES", str(5 * 1024 * 1024)))  # 5 MB
 PANO_ASPECT_RATIO = float(os.environ.get("PANO_ASPECT_RATIO", "1.9"))
 COUNTER_KEY = os.environ.get("COUNTER_KEY", "state/photo_counter.json")
 EMAIL_HOST = os.environ.get("EMAIL_HOST", "")
@@ -184,47 +185,96 @@ def classify_image_type(image_bytes):
 # ---------------------------------------------------------------------------
 # Image compression
 # ---------------------------------------------------------------------------
-def compress_image(image_bytes, quality=None):
-    """Compress image in-memory. Returns (compressed_bytes, content_type)."""
-    q = quality or DEFAULT_JPEG_QUALITY
+def _extract_exif_bytes(image_bytes):
+    """Best-effort EXIF extraction.  Returns bytes or None."""
     try:
-        # Preserve EXIF
-        exif_bytes = None
-        try:
-            exif_dict = piexif.load(image_bytes)
-            if "0th" in exif_dict and 40961 in exif_dict["0th"]:
-                del exif_dict["0th"][40961]
-            icc_tags = {34675, 319, 318}
-            for ifd in exif_dict:
-                if ifd == "thumbnail":
-                    continue
-                for tag in list(exif_dict[ifd].keys()):
-                    if tag in icc_tags:
-                        del exif_dict[ifd][tag]
-            try:
-                exif_bytes = piexif.dump(exif_dict)
-            except Exception:
-                exif_bytes = None
-        except Exception:
-            exif_bytes = None
-
-        with Image.open(io.BytesIO(image_bytes)) as img:
-            img = img.convert("RGB")
-            if "icc_profile" in img.info:
-                del img.info["icc_profile"]
-            if img.width > MAX_WIDTH:
-                scale = MAX_WIDTH / img.width
-                img = img.resize((MAX_WIDTH, int(img.height * scale)), Image.LANCZOS)
-            buf = io.BytesIO()
-            if exif_bytes:
-                img.save(buf, "JPEG", quality=q, exif=exif_bytes)
-            else:
-                img.save(buf, "JPEG", quality=q)
-            buf.seek(0)
-            return buf.read(), "image/jpeg"
+        exif_dict = piexif.load(image_bytes)
+        # Remove tags that can cause save errors
+        if "0th" in exif_dict and 40961 in exif_dict["0th"]:
+            del exif_dict["0th"][40961]
+        icc_tags = {34675, 319, 318}
+        for ifd in exif_dict:
+            if ifd == "thumbnail":
+                continue
+            for tag in list(exif_dict[ifd].keys()):
+                if tag in icc_tags:
+                    del exif_dict[ifd][tag]
+        return piexif.dump(exif_dict)
     except Exception as e:
-        logger.error("Compression failed: %s", e)
+        logger.debug("EXIF extraction skipped: %s", e)
+        return None
+
+
+def _save_jpeg(img, quality, exif_bytes):
+    """Save a PIL Image to JPEG bytes at the given quality."""
+    buf = io.BytesIO()
+    kwargs = {"quality": quality}
+    if exif_bytes:
+        try:
+            buf2 = io.BytesIO()
+            img.save(buf2, "JPEG", quality=quality, exif=exif_bytes)
+            buf2.seek(0)
+            return buf2.read()
+        except Exception:
+            pass  # fall through to save without EXIF
+    img.save(buf, "JPEG", **kwargs)
+    buf.seek(0)
+    return buf.read()
+
+
+def compress_image(image_bytes, quality=None):
+    """Compress and resize image to fit under MAX_FILE_BYTES.
+
+    Strategy:
+      1. Down-scale to MAX_WIDTH if wider.
+      2. Encode at the requested quality.
+      3. If the result still exceeds MAX_FILE_BYTES, reduce quality in
+         steps of 5 (floor 10).  If quality 10 is still too large,
+         halve the dimensions and repeat.
+
+    Returns (compressed_bytes, content_type).
+    """
+    q = quality or DEFAULT_JPEG_QUALITY
+    exif_bytes = _extract_exif_bytes(image_bytes)
+
+    try:
+        img = Image.open(io.BytesIO(image_bytes))
+        img = img.convert("RGB")
+        if "icc_profile" in img.info:
+            del img.info["icc_profile"]
+    except Exception as e:
+        logger.error("Failed to open image for compression: %s", e)
         return image_bytes, "image/jpeg"
+
+    # Initial down-scale to MAX_WIDTH
+    if img.width > MAX_WIDTH:
+        scale = MAX_WIDTH / img.width
+        img = img.resize((MAX_WIDTH, int(img.height * scale)), Image.LANCZOS)
+
+    # Iteratively compress until under MAX_FILE_BYTES
+    current_q = q
+    for _attempt in range(10):
+        out = _save_jpeg(img, current_q, exif_bytes)
+        if len(out) <= MAX_FILE_BYTES:
+            img.close()
+            return out, "image/jpeg"
+
+        if current_q > 10:
+            current_q = max(10, current_q - 5)
+        else:
+            # Quality is already minimal — shrink dimensions by 25 %
+            new_w = int(img.width * 0.75)
+            new_h = int(img.height * 0.75)
+            if new_w < 800:
+                break  # don't shrink below 800 px wide
+            img = img.resize((new_w, new_h), Image.LANCZOS)
+            current_q = q  # reset quality for the smaller image
+
+    # Best effort: return the last encoded result even if still over limit
+    img.close()
+    logger.warning("Image still %.1f MB after compression (target %.1f MB)",
+                   len(out) / (1024 * 1024), MAX_FILE_BYTES / (1024 * 1024))
+    return out, "image/jpeg"
 
 
 # ---------------------------------------------------------------------------

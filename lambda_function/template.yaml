@@ -31,10 +31,13 @@ Parameters:
     Default: "/processed"
   MaxWidth:
     Type: Number
-    Default: 8192
+    Default: 4096
   JpegQuality:
     Type: Number
     Default: 30
+  MaxFileBytes:
+    Type: Number
+    Default: 5242880  # 5 MB
   EmailHost:
     Type: String
     Default: ""
@@ -421,6 +424,7 @@ Resources:
           DOMAIN_PREFIX: !Ref DomainPrefix
           MAX_WIDTH: !Ref MaxWidth
           JPEG_QUALITY: !Ref JpegQuality
+          MAX_FILE_BYTES: !Ref MaxFileBytes
           COUNTER_KEY: state/photo_counter.json
           EMAIL_HOST: !Ref EmailHost
           EMAIL_PORT: !Ref EmailPort
