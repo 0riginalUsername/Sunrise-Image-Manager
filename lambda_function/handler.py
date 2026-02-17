@@ -208,20 +208,24 @@ def compress_image(image_bytes, quality=None):
         except Exception:
             exif_bytes = None
 
-        with Image.open(io.BytesIO(image_bytes)) as img:
-            img = img.convert("RGB")
-            if "icc_profile" in img.info:
-                del img.info["icc_profile"]
-            if img.width > MAX_WIDTH:
-                scale = MAX_WIDTH / img.width
-                img = img.resize((MAX_WIDTH, int(img.height * scale)), Image.LANCZOS)
-            buf = io.BytesIO()
-            if exif_bytes:
-                img.save(buf, "JPEG", quality=q, exif=exif_bytes)
-            else:
-                img.save(buf, "JPEG", quality=q)
-            buf.seek(0)
-            return buf.read(), "image/jpeg"
+        # Open, decode, and immediately close the source image so the
+        # original pixel buffer is freed before we create the RGB copy.
+        img = Image.open(io.BytesIO(image_bytes))
+        img.load()          # force full decode into memory
+        img = img.convert("RGB")  # original now unreferenced → GC-eligible
+        if "icc_profile" in img.info:
+            del img.info["icc_profile"]
+        if img.width > MAX_WIDTH:
+            scale = MAX_WIDTH / img.width
+            img = img.resize((MAX_WIDTH, int(img.height * scale)), Image.LANCZOS)
+        buf = io.BytesIO()
+        if exif_bytes:
+            img.save(buf, "JPEG", quality=q, exif=exif_bytes)
+        else:
+            img.save(buf, "JPEG", quality=q)
+        img.close()
+        buf.seek(0)
+        return buf.read(), "image/jpeg"
     except Exception as e:
         logger.error("Compression failed: %s", e)
         return image_bytes, "image/jpeg"
@@ -852,9 +856,29 @@ def lambda_handler(event, context):
     return {"statusCode": 200, "body": "OK"}
 
 
-# Max parallel workers — balances throughput vs. Lambda memory/connections.
-# Each worker holds one full image in memory (~5-30 MB), so 10 workers ≈ 300 MB peak.
-_PARALLEL_WORKERS = 10
+# Phase 1 (metadata scan) is lightweight — only EXIF parsing, no pixel decode.
+_SCAN_WORKERS = 10
+
+# Phase 2 (compress+upload) is memory-heavy.  During compression each worker
+# holds: raw JPEG bytes + fully-decoded RGB pixel buffer (~8× the file size).
+# For 30 MB images that's ~270 MB per worker.  Lambda has 3 008 MB; keeping
+# ~600 MB headroom means we can safely run  floor(2400 / per_worker_mb)
+# workers.  _max_phase2_workers() computes this after Phase 1 measures sizes.
+_MAX_PHASE2_WORKERS = 10          # upper bound (small files)
+_LAMBDA_AVAILABLE_MB = 2400       # 3008 minus runtime/Python overhead
+_BYTES_PER_PIXEL = 3              # RGB
+_JPEG_DECODE_RATIO = 8             # 1 MB JPEG ≈ 4 MB pixels, ×2 for convert("RGB") headroom
+
+
+def _max_phase2_workers(avg_file_bytes):
+    """Return a safe worker count for Phase 2 based on average image size."""
+    if avg_file_bytes <= 0:
+        return _MAX_PHASE2_WORKERS
+    avg_mb = avg_file_bytes / (1024 * 1024)
+    # per-worker estimate: raw bytes + decoded pixels + output buffer headroom
+    per_worker_mb = avg_mb + (avg_mb * _JPEG_DECODE_RATIO) + 10
+    workers = int(_LAMBDA_AVAILABLE_MB / per_worker_mb)
+    return max(2, min(_MAX_PHASE2_WORKERS, workers))
 
 
 def process_image_set(bucket, s3_keys, output_prefix, client_name, project_name, file_dt, type_str, template_str,
@@ -887,6 +911,7 @@ def process_image_set(bucket, s3_keys, output_prefix, client_name, project_name,
         """Download one image, extract EXIF metadata, discard bytes."""
         obj = s3.get_object(Bucket=bucket, Key=key)
         img_bytes = obj["Body"].read()
+        file_size = len(img_bytes)
         lat, lon, alt, date_time = extract_image_metadata(img_bytes)
         del img_bytes
 
@@ -905,6 +930,7 @@ def process_image_set(bucket, s3_keys, output_prefix, client_name, project_name,
         return {
             "s3_key": key,
             "orig_filename": orig_filename,
+            "file_size": file_size,
             "lat": lat, "lon": lon, "alt": alt,
             "northing": pos["northing"] if pos else None,
             "easting": pos["easting"] if pos else None,
@@ -913,7 +939,7 @@ def process_image_set(bucket, s3_keys, output_prefix, client_name, project_name,
             "sort_dt": dt,
         }
 
-    with ThreadPoolExecutor(max_workers=_PARALLEL_WORKERS) as scan_executor:
+    with ThreadPoolExecutor(max_workers=_SCAN_WORKERS) as scan_executor:
         futures = {}
         for idx, key in enumerate(s3_keys):
             futures[scan_executor.submit(_scan_metadata, idx, key)] = idx
@@ -946,6 +972,12 @@ def process_image_set(bucket, s3_keys, output_prefix, client_name, project_name,
             meta["base_name"] = f"{prefix}{number:03d}"
 
     # ── Phase 2: Parallel download → compress → upload ──────────────────
+    # Choose worker count based on average file size measured in Phase 1.
+    avg_file_bytes = (sum(m["file_size"] for m in image_meta) / len(image_meta)) if image_meta else 0
+    phase2_workers = _max_phase2_workers(avg_file_bytes)
+    logger.info("Phase 2: %d images, avg %.1f MB, using %d workers",
+                len(image_meta), avg_file_bytes / (1024 * 1024), phase2_workers)
+
     results = [None] * len(image_meta)
     processed_count = [0]  # mutable counter for progress reporting
 
@@ -993,7 +1025,7 @@ def process_image_set(bucket, s3_keys, output_prefix, client_name, project_name,
             "date_time": dt_str,
         }
 
-    with ThreadPoolExecutor(max_workers=_PARALLEL_WORKERS) as executor:
+    with ThreadPoolExecutor(max_workers=phase2_workers) as executor:
         futures = {}
         for idx, meta in enumerate(image_meta):
             futures[executor.submit(_process_single, idx, meta)] = idx
