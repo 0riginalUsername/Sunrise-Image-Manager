@@ -32,7 +32,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import boto3
 import piexif
-from PIL import Image, ExifTags
+from PIL import Image, ExifTags, ImageFile
+
+# Allow PIL to read EXIF from partial JPEG data (range requests).
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 from jinja2 import Environment, BaseLoader
 from markupsafe import Markup
 
@@ -810,15 +813,16 @@ def lambda_handler(event, context):
         csv_positions = parse_position_csv(position_csv)
 
         # Auto-classify unclassified images by aspect ratio.
-        # Only reads enough to check dimensions, then discards bytes.
+        # Only needs image dimensions (SOF marker), so fetch first 32 KB.
         if image_keys:
             logger.info("Auto-classifying %d unclassified images", len(image_keys))
             for key in image_keys:
                 try:
-                    img_obj = s3.get_object(Bucket=bucket, Key=key)
+                    img_obj = s3.get_object(Bucket=bucket, Key=key,
+                                            Range="bytes=0-32767")
                     img_bytes = img_obj["Body"].read()
                     img_type = classify_image_type(img_bytes)
-                    del img_bytes  # free immediately — Phase 1 of process_image_set will re-download for EXIF
+                    del img_bytes
                     if img_type == "pano":
                         pano_keys.append(key)
                     else:
@@ -981,32 +985,56 @@ def process_image_set(bucket, s3_keys, output_prefix, client_name, project_name,
     Process images in two phases to support large batches (1500+) without OOM.
 
     Phase 1 — Metadata scan (low memory):
-        Download each image, extract EXIF (GPS/datetime), discard bytes.
-        Only metadata + S3 key are kept. Memory: ~1 KB per image.
+        Fetch the first 256 KB of each image via S3 range request to extract
+        EXIF (GPS/datetime) and file size from the Content-Range header.
+        Falls back to a full download only if EXIF extraction fails.
+        Memory: ~256 KB per concurrent worker instead of 10-30 MB.
 
-    Phase 2 — Parallel process + upload:
-        After sorting and assigning filenames, re-download each image from S3,
+    Phase 2 — Parallel compress + upload:
+        After sorting and assigning filenames, download each full image from S3,
         compress, render HTML, and upload — all in parallel via ThreadPoolExecutor.
-        S3→S3 within the same region is fast (~100 ms/file), so the re-download
-        cost is negligible compared to the parallelism gained.
-        Peak memory: ~_PARALLEL_WORKERS images × 5-30 MB each ≈ 300 MB.
+        Peak memory: ~_MAX_PHASE2_WORKERS images × 5-30 MB each.
     """
     if not s3_keys:
         return []
     csv_positions = csv_positions or {}
 
     # ── Phase 1: Parallel metadata scan (chunked) ──────────────────────
-    # Download each image, extract EXIF (GPS/datetime), discard bytes.
-    # Processed in batches of _BATCH_SIZE to avoid flooding S3 connections.
+    # EXIF data lives in the JPEG APP1 marker (first ≤64 KB).  Instead of
+    # downloading the entire image (10-30 MB) just to read a few hundred
+    # bytes of GPS/datetime, we fetch only the first 256 KB via an S3
+    # range request and get file_size from the ContentRange header — one
+    # cheap call per image instead of a full download.  If EXIF extraction
+    # fails on the partial data we fall back to a full download.
+    _SCAN_RANGE_BYTES = 256 * 1024  # 256 KB — covers EXIF + SOF with margin
     image_meta = [None] * len(s3_keys)
 
     def _scan_metadata(idx, key):
-        """Download one image, extract EXIF metadata, discard bytes."""
-        obj = s3.get_object(Bucket=bucket, Key=key)
-        img_bytes = obj["Body"].read()
-        file_size = len(img_bytes)
-        lat, lon, alt, date_time = extract_image_metadata(img_bytes)
-        del img_bytes
+        """Fetch the JPEG header from S3 and extract EXIF metadata."""
+        # Range request: first 256 KB for EXIF + dimensions
+        obj = s3.get_object(Bucket=bucket, Key=key,
+                            Range=f"bytes=0-{_SCAN_RANGE_BYTES - 1}")
+        partial_bytes = obj["Body"].read()
+        # ContentRange: "bytes 0-262143/18350592" — parse total size
+        content_range = obj.get("ContentRange", "")
+        if "/" in content_range:
+            file_size = int(content_range.rsplit("/", 1)[1])
+        else:
+            file_size = len(partial_bytes)
+
+        lat, lon, alt, date_time = extract_image_metadata(partial_bytes)
+
+        # If EXIF extraction got nothing, fall back to full download
+        if date_time is None and lat is None:
+            try:
+                full_obj = s3.get_object(Bucket=bucket, Key=key)
+                full_bytes = full_obj["Body"].read()
+                file_size = len(full_bytes)
+                lat, lon, alt, date_time = extract_image_metadata(full_bytes)
+                del full_bytes
+            except Exception:
+                pass  # use whatever we got from partial
+        del partial_bytes
 
         if date_time:
             try:
