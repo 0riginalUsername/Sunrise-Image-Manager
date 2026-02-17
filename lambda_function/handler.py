@@ -26,7 +26,6 @@ from decimal import Decimal, getcontext
 from email.message import EmailMessage
 from pathlib import Path
 
-import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import boto3
@@ -55,17 +54,6 @@ logger.setLevel(logging.INFO)
 logger.info("Geo layer available: %s", HAS_GEO)
 
 s3 = boto3.client("s3")
-
-# Thread-local S3 clients for safe use in ThreadPoolExecutor workers.
-# boto3 clients are not guaranteed thread-safe; each worker thread gets its own.
-_thread_local = threading.local()
-
-
-def _get_s3():
-    """Return a thread-local S3 client (creates one per thread on first call)."""
-    if not hasattr(_thread_local, "s3"):
-        _thread_local.s3 = boto3.client("s3")
-    return _thread_local.s3
 
 # ---------------------------------------------------------------------------
 # Environment / config  (set via Lambda env vars or SSM)
@@ -898,8 +886,7 @@ def process_image_set(bucket, s3_keys, output_prefix, client_name, project_name,
 
     def _scan_metadata(idx, key):
         """Download one image, extract EXIF metadata, discard bytes."""
-        local_s3 = _get_s3()
-        obj = local_s3.get_object(Bucket=bucket, Key=key)
+        obj = s3.get_object(Bucket=bucket, Key=key)
         img_bytes = obj["Body"].read()
         lat, lon, alt, date_time = extract_image_metadata(img_bytes)
         del img_bytes
@@ -929,10 +916,8 @@ def process_image_set(bucket, s3_keys, output_prefix, client_name, project_name,
 
     def _process_single(idx, meta):
         """Download, compress, render HTML, and upload a single image."""
-        local_s3 = _get_s3()
-
         # Re-download from S3
-        obj = local_s3.get_object(Bucket=bucket, Key=meta["s3_key"])
+        obj = s3.get_object(Bucket=bucket, Key=meta["s3_key"])
         img_bytes = obj["Body"].read()
 
         # Compress (or keep original)
@@ -944,7 +929,7 @@ def process_image_set(bucket, s3_keys, output_prefix, client_name, project_name,
 
         # Upload compressed image to S3
         img_key = f"{output_prefix}{meta['final_name']}"
-        local_s3.put_object(Bucket=bucket, Key=img_key, Body=output_bytes, ContentType=content_type)
+        s3.put_object(Bucket=bucket, Key=img_key, Body=output_bytes, ContentType=content_type)
         del output_bytes  # free compressed bytes
 
         # Render and upload HTML viewer page
@@ -962,8 +947,8 @@ def process_image_set(bucket, s3_keys, output_prefix, client_name, project_name,
             "IMG_DATE": converted_dt,
         })
         html_key = f"{output_prefix}{meta['base_name']}.htm"
-        local_s3.put_object(Bucket=bucket, Key=html_key,
-                            Body=html_content.encode("utf-8"), ContentType="text/html")
+        s3.put_object(Bucket=bucket, Key=html_key,
+                      Body=html_content.encode("utf-8"), ContentType="text/html")
 
         return {
             "base_name": meta["final_name"],
