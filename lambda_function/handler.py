@@ -36,6 +36,10 @@ from PIL import Image, ExifTags, ImageFile
 
 # Allow PIL to read EXIF from partial JPEG data (range requests).
 ImageFile.LOAD_TRUNCATED_IMAGES = True
+# Ultra-wide panoramas (e.g. 20480×10240 = 210 MP) exceed PIL's default
+# decompression bomb limit of ~179 MP.  Raise it to 500 MP so they can
+# be compressed instead of silently falling back to the uncompressed original.
+Image.MAX_IMAGE_PIXELS = 500_000_000
 from jinja2 import Environment, BaseLoader
 from markupsafe import Markup
 
@@ -952,13 +956,12 @@ _SCAN_WORKERS = 10
 
 # Phase 2 (compress+upload) is memory-heavy.  During compression each worker
 # holds: raw JPEG bytes + fully-decoded RGB pixel buffer + resized copy.
-# For a 30 MB panorama the decoded pixels alone are ~216 MB, and during
-# convert/resize both old and new buffers coexist briefly (~430 MB).
+# A 20480×10240 pano decodes to ~600 MB of RGB pixels; during resize both
+# the original and resized buffers coexist briefly (~700 MB peak).
 # Lambda has 3008 MB; keeping ~1000 MB headroom for runtime / GC / S3
 # buffers means we can safely run  floor(2000 / per_worker_mb)  workers.
 _MAX_PHASE2_WORKERS = 4           # cap — even small files don't need more
 _LAMBDA_AVAILABLE_MB = 2000       # 3008 minus generous runtime headroom
-_JPEG_DECODE_RATIO = 15           # 1 MB JPEG ≈ 8 MB pixels; ×2 for resize peak
 
 # Batch size for chunked processing.  Both Phase 1 (metadata scan) and Phase 2
 # (compress+upload) process images in batches of this size instead of submitting
@@ -967,15 +970,27 @@ _JPEG_DECODE_RATIO = 15           # 1 MB JPEG ≈ 8 MB pixels; ×2 for resize pe
 _BATCH_SIZE = 50
 
 
-def _max_phase2_workers(avg_file_bytes):
-    """Return a safe worker count for Phase 2 based on average image size."""
-    if avg_file_bytes <= 0:
+def _max_phase2_workers(max_pixel_count, avg_file_mb):
+    """Return a safe worker count for Phase 2 based on actual pixel dimensions.
+
+    Uses the *largest* image's pixel count (not the average) because during
+    resize both the original and resized RGB buffers coexist briefly.
+
+    Per-worker peak memory estimate:
+        raw JPEG bytes  +  decoded RGB pixels  +  resized RGB pixels  +  headroom
+        avg_file_mb     +  (pixels × 3 / 1M)  +  ~100 MB (8192×4096) +  10 MB
+    """
+    if max_pixel_count <= 0:
         return _MAX_PHASE2_WORKERS
-    avg_mb = avg_file_bytes / (1024 * 1024)
-    # per-worker estimate: raw bytes + decoded pixels + output buffer headroom
-    per_worker_mb = avg_mb + (avg_mb * _JPEG_DECODE_RATIO) + 10
+    # Decoded RGB: 3 bytes per pixel
+    decoded_mb = (max_pixel_count * 3) / (1024 * 1024)
+    # During resize the resized buffer (~100 MB for 8192×4096) coexists
+    resize_mb = 100
+    per_worker_mb = avg_file_mb + decoded_mb + resize_mb + 10
     workers = int(_LAMBDA_AVAILABLE_MB / per_worker_mb)
-    return max(2, min(_MAX_PHASE2_WORKERS, workers))
+    logger.info("Worker calc: max_pixels=%d, decoded=%.0f MB, per_worker=%.0f MB → %d workers",
+                max_pixel_count, decoded_mb, per_worker_mb, workers)
+    return max(1, min(_MAX_PHASE2_WORKERS, workers))
 
 
 def process_image_set(bucket, s3_keys, output_prefix, client_name, project_name, file_dt, type_str, template_str,
@@ -1024,6 +1039,14 @@ def process_image_set(bucket, s3_keys, output_prefix, client_name, project_name,
 
         lat, lon, alt, date_time = extract_image_metadata(partial_bytes)
 
+        # Extract image dimensions from partial bytes (SOF marker is in first few KB)
+        img_width = img_height = 0
+        try:
+            with Image.open(io.BytesIO(partial_bytes)) as img:
+                img_width, img_height = img.size
+        except Exception:
+            pass
+
         # If EXIF extraction got nothing, fall back to full download
         if date_time is None and lat is None:
             try:
@@ -1031,6 +1054,12 @@ def process_image_set(bucket, s3_keys, output_prefix, client_name, project_name,
                 full_bytes = full_obj["Body"].read()
                 file_size = len(full_bytes)
                 lat, lon, alt, date_time = extract_image_metadata(full_bytes)
+                if img_width == 0:
+                    try:
+                        with Image.open(io.BytesIO(full_bytes)) as img:
+                            img_width, img_height = img.size
+                    except Exception:
+                        pass
                 del full_bytes
             except Exception:
                 pass  # use whatever we got from partial
@@ -1052,6 +1081,8 @@ def process_image_set(bucket, s3_keys, output_prefix, client_name, project_name,
             "s3_key": key,
             "orig_filename": orig_filename,
             "file_size": file_size,
+            "img_width": img_width,
+            "img_height": img_height,
             "lat": lat, "lon": lon, "alt": alt,
             "northing": pos["northing"] if pos else None,
             "easting": pos["easting"] if pos else None,
@@ -1101,14 +1132,17 @@ def process_image_set(bucket, s3_keys, output_prefix, client_name, project_name,
             meta["base_name"] = f"{prefix}{number:03d}"
 
     # ── Phase 2: Parallel download → compress → upload (chunked) ────────
-    # Choose worker count based on average file size measured in Phase 1.
-    # Images are processed in batches of _BATCH_SIZE so that each batch gets
-    # a fresh ThreadPoolExecutor and an explicit gc.collect() between batches,
-    # preventing S3 connection-pool exhaustion and unbounded memory growth.
-    avg_file_bytes = (sum(m["file_size"] for m in image_meta) / len(image_meta)) if image_meta else 0
-    phase2_workers = _max_phase2_workers(avg_file_bytes)
-    logger.info("Phase 2: %d images, avg %.1f MB, using %d workers, batch size %d",
-                len(image_meta), avg_file_bytes / (1024 * 1024), phase2_workers, _BATCH_SIZE)
+    # Choose worker count based on the largest image's pixel dimensions
+    # (not average file size) to avoid OOM on ultra-high-res panoramas.
+    # A 20480×10240 pano decodes to ~600 MB — file size alone can't predict this.
+    max_pixel_count = max((m["img_width"] * m["img_height"] for m in image_meta), default=0)
+    avg_file_mb = (sum(m["file_size"] for m in image_meta) / len(image_meta) / (1024 * 1024)) if image_meta else 0
+    phase2_workers = _max_phase2_workers(max_pixel_count, avg_file_mb)
+    logger.info("Phase 2: %d images, largest %dx%d, avg %.1f MB, using %d workers, batch size %d",
+                len(image_meta),
+                max((m["img_width"] for m in image_meta), default=0),
+                max((m["img_height"] for m in image_meta), default=0),
+                avg_file_mb, phase2_workers, _BATCH_SIZE)
 
     results = [None] * len(image_meta)
     processed_count = [0]  # mutable counter for progress reporting
