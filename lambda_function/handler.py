@@ -316,6 +316,8 @@ def generate_state_plane_csv(images_meta, output_prefix, type_str):
     writer.writerow(["Filename", "Date Taken", "ZoneName", "EPSG", "Easting", "Northing",
                       "Elevation_ft", "Hyperlink"])
     rows_written = 0
+    skipped_no_gps = 0
+    skipped_projection = 0
     for info in images_meta:
         base = info["base_name"].rsplit(".", 1)[0]
         hyperlink = f"{DOMAIN_BASE}/{output_prefix}{base}.htm"
@@ -331,13 +333,18 @@ def generate_state_plane_csv(images_meta, output_prefix, type_str):
         else:
             lat, lon, alt = info.get("lat"), info.get("lon"), info.get("alt")
             if lat is None or lon is None:
+                skipped_no_gps += 1
                 continue
             try:
                 zone_name, epsg, x, y, z = latlon_to_state_plane(lat, lon, alt)
                 writer.writerow([base, info.get("date_time"), zone_name, epsg, x, y, z, hyperlink])
                 rows_written += 1
             except Exception as e:
+                skipped_projection += 1
                 logger.warning("State Plane CSV: projection fail for %s: %s", base, e)
+    if skipped_no_gps > 0 or skipped_projection > 0:
+        logger.warning("State Plane CSV (%s): %d written, %d skipped (no GPS), %d skipped (projection fail)",
+                       type_str, rows_written, skipped_no_gps, skipped_projection)
     if rows_written == 0:
         return None
     return buf.getvalue()
@@ -517,7 +524,7 @@ def latlon_to_state_plane(lat, lon, alt=None):
             z = meters_to_feet(alt) if alt is not None else 0
             x, y = transformer.transform(lon, lat)
             return rec["ZONENAME"], epsg, x, y, z
-    raise ValueError("No State Plane zone found for this location")
+    raise ValueError(f"No State Plane zone found for lat={lat}, lon={lon}")
 
 
 # ---------------------------------------------------------------------------
@@ -578,6 +585,8 @@ def export_dxf(bucket, pano_meta, photo_meta, office_name, client_name, project_
             break
 
     def insert_blocks(meta_list, block_name, layer_name):
+        skipped = 0
+        placed = 0
         for info in meta_list:
             northing = info.get("northing")
             easting = info.get("easting")
@@ -589,13 +598,16 @@ def export_dxf(bucket, pano_meta, photo_meta, office_name, client_name, project_
             else:
                 lat, lon, alt = info.get("lat"), info.get("lon"), info.get("alt")
                 if lat is None or lon is None:
+                    skipped += 1
                     continue
                 try:
                     _, epsg, x, y, z = latlon_to_state_plane(lat, lon, alt)
                 except Exception as e:
-                    logger.warning("Projection fail for %s: %s", info.get("base_name"), e)
+                    skipped += 1
+                    logger.warning("DXF: projection fail for %s: %s", info.get("base_name"), e)
                     continue
 
+            placed += 1
             base = info["base_name"].rsplit(".", 1)[0]
             hyperlink = f"{DOMAIN_BASE}/{output_prefix}{base}.htm"
             block_ref = msp.add_blockref(block_name, (x, y, z), dxfattribs={
@@ -608,6 +620,8 @@ def export_dxf(bucket, pano_meta, photo_meta, office_name, client_name, project_
                 "###": base,
                 "HYPERLINK": hyperlink,
             })
+        if skipped > 0:
+            logger.warning("DXF %s: %d image(s) skipped, %d placed", block_name, skipped, placed)
 
     insert_blocks(pano_meta, pano_block, layer_pano)
     insert_blocks(photo_meta, photo_block, layer_photo)

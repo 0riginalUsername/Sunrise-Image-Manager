@@ -303,12 +303,24 @@ def meters_to_feet(meters: float):
     factor = 3937 / 1200
     return meters * factor
 
+_zones_gdf = None
+
+def _load_zones_gdf():
+    """Load and cache the State Plane zones geodataframe."""
+    global _zones_gdf
+    if _zones_gdf is None:
+        if not STATEPLANE_SHAPEFILE.exists():
+            raise FileNotFoundError(f"State Plane shapefile not found: {STATEPLANE_SHAPEFILE}")
+        _zones_gdf = gpd.read_file(STATEPLANE_SHAPEFILE)
+        logging.info(f"Loaded State Plane shapefile with {len(_zones_gdf)} zones")
+    return _zones_gdf
+
 def latlon_to_state_plane_auto(lat: float, lon: float, alt=None):
-    zones = gpd.read_file(STATEPLANE_SHAPEFILE)
+    zones = _load_zones_gdf()
     pt = Point(lon, lat)
     match = zones[zones.contains(pt)]
     if match.empty:
-        raise ValueError("No State Plane zone found for this location")
+        raise ValueError(f"No State Plane zone found for lat={lat}, lon={lon}")
     zone = match.iloc[0]
     epsg = int(zone["EPSG"])
     transformer = Transformer.from_crs("EPSG:4326", f"EPSG:{epsg}", always_xy=True)
@@ -473,57 +485,74 @@ def make_domain_path(client_name, project_name, dt):
 
 def export_gps_and_date_to_csv(renamed_images, client_name, project_name, file_dt, type_str):
     """
-    Exports two CSVs: one with image metadata, one with projected state plane coords.
+    Exports two CSVs: one with image metadata (WGS84), one with State Plane coords.
+    Returns (first_hyperlink, skipped_no_gps, skipped_projection_fail).
     """
     client_name = client_name.strip()
     project_name = project_name.strip()
     if not renamed_images:
         logging.warning("No renamed images available for CSV export.")
-        return None
+        return None, [], []
 
-    first_info = next(iter(renamed_images.values()))
-    lat, lon, alt = first_info.get("lat"), first_info.get("lon"), first_info.get("alt")
+    # Validate shapefile availability before processing
+    sp_available = True
     try:
-        if lat is not None and lon is not None:
-            zone_name, epsg, x, y, z = latlon_to_state_plane_auto(lat, lon, alt)
-            proj_slug = zone_name.replace(" ", "_")
-        else:
-            proj_slug = "NoGPS"
-    except Exception as e:
-        proj_slug = "NoGPS"
-        logging.warning(f"Failed state plane lookup for first image: {e}")
+        _load_zones_gdf()
+    except FileNotFoundError as e:
+        logging.error(f"State Plane shapefile not available: {e}. SP CSV will not be generated.")
+        sp_available = False
 
     type_suffix = f"_{type_str}" if type_str else ""
     output_csv = f"{file_dt}_{client_name}_{project_name}{type_suffix}_WGS84.csv"
-    sp_output_csv = f"SP-{proj_slug}_{file_dt}_{client_name}_{project_name}{type_suffix}.csv"
+    sp_output_csv = f"SP_{file_dt}_{client_name}_{project_name}{type_suffix}_StatePlane.csv"
     output_directory = safe_mkdir(OUTPUT_ROOT / client_name / project_name / file_dt)
     output_file_path = output_directory / output_csv
     sp_output_file_path = output_directory / sp_output_csv
 
     first_hyperlink = None
-    with open(output_file_path, "w", newline="", encoding="utf-8") as csvfile, \
-         open(sp_output_file_path, "w", newline="", encoding="utf-8") as sp_csvfile:
+    skipped_no_gps = []
+    skipped_projection_fail = []
+
+    with open(output_file_path, "w", newline="", encoding="utf-8") as csvfile:
         writer = csv.writer(csvfile)
-        sp_writer = csv.writer(sp_csvfile)
         writer.writerow(["Filename", "Date Taken", "GPSLatitude", "GPSLongitude", "GPSAltitude", "Hyperlink"])
         domain_path = make_domain_path(client_name, project_name, file_dt)
-        for info in renamed_images.values():
-            base_name = strip_extension(info["base_name"])
-            hyperlink = f"{DOMAIN_BASE}{domain_path}/{base_name}.htm"
-            if first_hyperlink is None:
-                first_hyperlink = hyperlink
-            writer.writerow([base_name, info["date_time"], info["lat"], info["lon"], info["alt"], hyperlink])
-            # For SP: y, x, z, basename, hyperlink
-            try:
+
+        sp_csvfile = open(sp_output_file_path, "w", newline="", encoding="utf-8") if sp_available else None
+        sp_writer = csv.writer(sp_csvfile) if sp_csvfile else None
+        if sp_writer:
+            sp_writer.writerow(["Filename", "Date Taken", "ZoneName", "EPSG", "Easting", "Northing",
+                                "Elevation_ft", "Hyperlink"])
+
+        try:
+            for info in renamed_images.values():
+                base_name = strip_extension(info["base_name"])
+                hyperlink = f"{DOMAIN_BASE}{domain_path}/{base_name}.htm"
+                if first_hyperlink is None:
+                    first_hyperlink = hyperlink
+                writer.writerow([base_name, info["date_time"], info["lat"], info["lon"], info["alt"], hyperlink])
+
+                if not sp_writer:
+                    continue
                 if info["lat"] is not None and info["lon"] is not None:
-                    _, epsg, x, y, z = latlon_to_state_plane_auto(info["lat"], info["lon"], info["alt"])
+                    try:
+                        zone_name, epsg, x, y, z = latlon_to_state_plane_auto(info["lat"], info["lon"], info["alt"])
+                        sp_writer.writerow([base_name, info["date_time"], zone_name, epsg, x, y, z, hyperlink])
+                    except Exception as e:
+                        skipped_projection_fail.append(base_name)
+                        logging.warning(f"Failed state plane transform for {base_name}: {e}")
                 else:
-                    x = y = z = None
-                sp_writer.writerow([y, x, z, base_name, hyperlink])
-            except Exception as e:
-                sp_writer.writerow(["", "", "", base_name, hyperlink])
-                logging.warning(f"Failed state plane transform for {base_name}: {e}")
-    return first_hyperlink
+                    skipped_no_gps.append(base_name)
+        finally:
+            if sp_csvfile:
+                sp_csvfile.close()
+
+    if skipped_no_gps:
+        logging.warning(f"SP CSV: {len(skipped_no_gps)} image(s) skipped (no GPS): {', '.join(skipped_no_gps[:10])}")
+    if skipped_projection_fail:
+        logging.warning(f"SP CSV: {len(skipped_projection_fail)} image(s) skipped (projection failed): {', '.join(skipped_projection_fail[:10])}")
+
+    return first_hyperlink, skipped_no_gps, skipped_projection_fail
 
 def export_combined_photos_panos_to_dxf(
     pano_images, photo_images,
@@ -569,15 +598,20 @@ def export_combined_photos_panos_to_dxf(
             break
 
     def insert_block(images, block_name, layer_name, block_scale):
+        skipped = 0
+        placed = 0
         for info in images.values():
             lat, lon, alt = info.get("lat"), info.get("lon"), info.get("alt")
             if lat is None or lon is None:
+                skipped += 1
                 continue
             try:
                 _, epsg, x, y, z = latlon_to_state_plane_auto(lat, lon, alt)
                 insert_point = (x, y, z)
+                placed += 1
             except Exception as e:
-                logging.warning(f"Projection fail for {info.get('base_name')}: {e}")
+                skipped += 1
+                logging.warning(f"DXF: projection fail for {info.get('base_name')}: {e}")
                 continue
             base_name = strip_extension(info["base_name"])
             domain_path = make_domain_path(client_name, project_name, file_dt)
@@ -592,6 +626,8 @@ def export_combined_photos_panos_to_dxf(
                 "###": base_name,
                 "HYPERLINK": hyperlink,
             })
+        if skipped > 0:
+            logging.warning(f"DXF {block_name}: {skipped} image(s) skipped, {placed} placed")
     insert_block(pano_images, pano_block, layer_name_pano, block_scale_pano)
     insert_block(photo_images, photo_block, layer_name_photo, block_scale_photo)
     output_dir = safe_mkdir(OUTPUT_ROOT / client_name / project_name / file_dt)
@@ -1435,8 +1471,26 @@ class Pano2DWGApp(QMainWindow):
                     processed_steps += num_photo
                     update_progress()
                 # Exports
-                first_link = export_gps_and_date_to_csv(pano_renamed_images, client_name, project_name, dt, "pano")
-                export_gps_and_date_to_csv(photo_renamed_images, client_name, project_name, dt, "photo")
+                all_skipped_gps = []
+                all_skipped_proj = []
+
+                first_link, skipped_gps, skipped_proj = export_gps_and_date_to_csv(pano_renamed_images, client_name, project_name, dt, "pano")
+                all_skipped_gps.extend(skipped_gps)
+                all_skipped_proj.extend(skipped_proj)
+
+                _, skipped_gps, skipped_proj = export_gps_and_date_to_csv(photo_renamed_images, client_name, project_name, dt, "photo")
+                all_skipped_gps.extend(skipped_gps)
+                all_skipped_proj.extend(skipped_proj)
+
+                if all_skipped_gps or all_skipped_proj:
+                    warning_parts = []
+                    if all_skipped_gps:
+                        warning_parts.append(f"{len(all_skipped_gps)} image(s) had no GPS coordinates")
+                    if all_skipped_proj:
+                        warning_parts.append(f"{len(all_skipped_proj)} image(s) failed State Plane projection")
+                    warning_msg = "Warning: " + "; ".join(warning_parts)
+                    self.status_update_signal.emit(warning_msg, True)
+                    logging.warning(warning_msg)
                 export_combined_photos_panos_to_dxf(pano_renamed_images, photo_renamed_images, client_name, project_name, dt)
                 proj_compiled = {
                     "date_exif": datetime.now().strftime("%Y-%B-%d %H:%M"),
