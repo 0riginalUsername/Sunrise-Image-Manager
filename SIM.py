@@ -308,18 +308,20 @@ def process_image_set(files, client_name, project_name, file_dt, remote_dir, emp
             final_path = file.parent / final_name
             if final_path.exists():
                 final_path.unlink()
+            orig_filename = file.name
             file.rename(final_path)
             futures[executor.submit(compress_image, final_path, remote_dir, 30)] = (
-                final_name, str(final_path), lat, lon, alt, date_time
+                final_name, str(final_path), lat, lon, alt, date_time, orig_filename
             )
 
     write_photo_counter(PHOTO_COUNTER_PATH, photo_prefix, photo_number)
 
     for future in as_completed(futures):
-        final_name, final_path, lat, lon, alt, date_time = futures[future]
+        final_name, final_path, lat, lon, alt, date_time, orig_filename = futures[future]
         compressed_path = future.result()
         renamed_images[final_name] = {
             "base_name": final_name,
+            "orig_filename": orig_filename,
             "full_path": final_path,
             "compressed_path": compressed_path,
             "lat": lat,
@@ -366,29 +368,30 @@ def export_gps_and_date_to_csv(renamed_images, client_name, project_name, file_d
 
     with open(output_file_path, "w", newline="", encoding="utf-8") as csvfile:
         writer = csv.writer(csvfile)
-        writer.writerow(["Filename", "Date Taken", "GPSLatitude", "GPSLongitude", "GPSAltitude", "Hyperlink"])
+        writer.writerow(["Filename", "OriginalFilename", "Date Taken", "GPSLatitude", "GPSLongitude", "GPSAltitude", "Hyperlink"])
         domain_path = make_domain_path(client_name, project_name, file_dt)
 
         sp_csvfile = open(sp_output_file_path, "w", newline="", encoding="utf-8") if sp_available else None
         sp_writer = csv.writer(sp_csvfile) if sp_csvfile else None
         if sp_writer:
-            sp_writer.writerow(["Filename", "Date Taken", "ZoneName", "EPSG", "Easting", "Northing",
+            sp_writer.writerow(["Filename", "OriginalFilename", "Date Taken", "ZoneName", "EPSG", "Easting", "Northing",
                                 "Elevation_ft", "Hyperlink"])
 
         try:
             for info in renamed_images.values():
                 base_name = strip_extension(info["base_name"])
+                orig = info.get("orig_filename", "")
                 hyperlink = f"https://www.seihds.com{domain_path}/{base_name}.htm"
                 if first_hyperlink is None:
                     first_hyperlink = hyperlink
-                writer.writerow([base_name, info["date_time"], info["lat"], info["lon"], info["alt"], hyperlink])
+                writer.writerow([base_name, orig, info["date_time"], info["lat"], info["lon"], info["alt"], hyperlink])
 
                 if not sp_writer:
                     continue
                 if info["lat"] is not None and info["lon"] is not None:
                     try:
                         zone_name, epsg, x, y, z = latlon_to_state_plane_auto(info["lat"], info["lon"], info["alt"])
-                        sp_writer.writerow([base_name, info["date_time"], zone_name, epsg, x, y, z, hyperlink])
+                        sp_writer.writerow([base_name, orig, info["date_time"], zone_name, epsg, x, y, z, hyperlink])
                     except Exception as e:
                         skipped_projection_fail.append(base_name)
                         logging.warning(f"Failed state plane transform for {base_name}: {e}")

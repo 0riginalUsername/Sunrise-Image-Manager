@@ -295,7 +295,7 @@ def generate_csv(images_meta, output_prefix, type_str):
     """Generate CSV content as string with GPS and survey coordinate columns."""
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["Filename", "Date Taken", "GPSLatitude", "GPSLongitude", "GPSAltitude",
+    writer.writerow(["Filename", "OriginalFilename", "Date Taken", "GPSLatitude", "GPSLongitude", "GPSAltitude",
                       "Northing", "Easting", "Elevation", "Hyperlink"])
     first_link = None
     for info in images_meta:
@@ -303,7 +303,8 @@ def generate_csv(images_meta, output_prefix, type_str):
         hyperlink = f"{DOMAIN_BASE}/{output_prefix}{base}.htm"
         if first_link is None:
             first_link = hyperlink
-        writer.writerow([base, info.get("date_time"), info.get("lat"), info.get("lon"), info.get("alt"),
+        writer.writerow([base, info.get("orig_filename", ""), info.get("date_time"),
+                          info.get("lat"), info.get("lon"), info.get("alt"),
                           info.get("northing", ""), info.get("easting", ""), info.get("csv_elevation", ""),
                           hyperlink])
     return buf.getvalue(), first_link
@@ -313,13 +314,14 @@ def generate_state_plane_csv(images_meta, output_prefix, type_str):
     """Generate CSV with State Plane coordinates (requires geo layer)."""
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["Filename", "Date Taken", "ZoneName", "EPSG", "Easting", "Northing",
+    writer.writerow(["Filename", "OriginalFilename", "Date Taken", "ZoneName", "EPSG", "Easting", "Northing",
                       "Elevation_ft", "Hyperlink"])
     rows_written = 0
     skipped_no_gps = 0
     skipped_projection = 0
     for info in images_meta:
         base = info["base_name"].rsplit(".", 1)[0]
+        orig = info.get("orig_filename", "")
         hyperlink = f"{DOMAIN_BASE}/{output_prefix}{base}.htm"
 
         northing = info.get("northing")
@@ -327,7 +329,7 @@ def generate_state_plane_csv(images_meta, output_prefix, type_str):
         csv_elev = info.get("csv_elevation")
         if northing is not None and easting is not None:
             # CSV survey coordinates — already in State Plane
-            writer.writerow([base, info.get("date_time"), "CSV", "", easting, northing,
+            writer.writerow([base, orig, info.get("date_time"), "CSV", "", easting, northing,
                               csv_elev or 0, hyperlink])
             rows_written += 1
         else:
@@ -337,7 +339,7 @@ def generate_state_plane_csv(images_meta, output_prefix, type_str):
                 continue
             try:
                 zone_name, epsg, x, y, z = latlon_to_state_plane(lat, lon, alt)
-                writer.writerow([base, info.get("date_time"), zone_name, epsg, x, y, z, hyperlink])
+                writer.writerow([base, orig, info.get("date_time"), zone_name, epsg, x, y, z, hyperlink])
                 rows_written += 1
             except Exception as e:
                 skipped_projection += 1
