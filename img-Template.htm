@@ -151,6 +151,46 @@
 		.video-embed-section {
 			padding: 180px 0 100px 0;
 		}
+
+		/* ── Password gate (viewer pages) ── */
+		body.pw-locked #maintable,
+		body.pw-locked .pagination-nav-section {
+			display: none !important;
+		}
+		.pw-gate {
+			display: none;
+			justify-content: center;
+			align-items: center;
+			min-height: calc(100vh - 300px);
+			padding: 24px;
+		}
+		body.pw-locked .pw-gate { display: flex; }
+		.pw-gate-card {
+			background: #fff;
+			border-radius: 12px;
+			padding: 40px 36px;
+			box-shadow: 0 4px 24px rgba(0,0,0,0.10);
+			max-width: 400px;
+			width: 100%;
+			text-align: center;
+			font-family: 'Segoe UI', 'PT Sans', Arial, sans-serif;
+		}
+		.pw-gate-card h2 { font-size: 18px; color: #113e59; margin-bottom: 8px; }
+		.pw-gate-card p { font-size: 13px; color: #a7a9ac; margin-bottom: 20px; }
+		.pw-gate-card input {
+			width: 100%; padding: 12px 14px; border: 1px solid #ccc;
+			border-radius: 6px; font-size: 14px; margin-bottom: 12px;
+			box-sizing: border-box;
+		}
+		.pw-gate-card input:focus { border-color: #113e59; outline: none; box-shadow: 0 0 0 2px rgba(17,62,89,0.12); }
+		.pw-gate-card button {
+			width: 100%; padding: 12px; background: #ffd457; color: #113e59;
+			border: none; border-radius: 8px; font-size: 15px; font-weight: 700; cursor: pointer;
+		}
+		.pw-gate-card button:hover { opacity: 0.85; }
+		.pw-gate-card button:disabled { opacity: 0.5; cursor: not-allowed; }
+		.pw-gate-error { color: #d2342e; font-size: 13px; margin-top: 10px; min-height: 18px; }
+		.pw-gate-lock { font-size: 36px; margin-bottom: 12px; opacity: 0.6; }
 	</style>
 
 	<!--[if lte IE 8]>
@@ -168,9 +208,21 @@
 	<!-- -------------  that's all!  ------------ -->
 </head>
 
-<body>
-	<!-- 
-		  Header 
+<body class="pw-locked">
+	<!-- Password gate overlay (for protected projects) -->
+	<div class="pw-gate" id="pwGate">
+		<div class="pw-gate-card">
+			<div class="pw-gate-lock">&#x1F512;</div>
+			<h2>This project is password protected</h2>
+			<p>Enter the project password to view this image.</p>
+			<input type="password" id="viewerPassword" placeholder="Project password" onkeydown="if(event.key==='Enter')verifyViewerPassword()">
+			<button onclick="verifyViewerPassword()" id="verifyViewerBtn">View Image</button>
+			<div class="pw-gate-error" id="viewerPwError"></div>
+		</div>
+	</div>
+
+	<!--
+		  Header
 	  -->
 
 	  <header id="masthead" class="site-header">
@@ -387,7 +439,7 @@
 		<tr>
 			<td id="middletd">
 				<div id="img">
-					<img src="{{IMG}}" alt="Panorama Image">
+					<img data-src="{{IMG}}" src="" alt="Image">
 				</div>
 			</td>
 		</tr>
@@ -474,7 +526,81 @@
 	<script type='text/javascript' src='https://sunrise-eng.com/wp-content/themes/sunrise-eng-2018/assets/js/custom.min.js?ver=1.0.2'></script>
 
 	<script type="text/javascript">
-	
+	/* ── Password gate logic for viewer pages ── */
+	var _projectData = null;
+	var _apiBase = null;
+
+	function unlockViewer() {
+		document.body.classList.remove('pw-locked');
+		var img = document.querySelector('#img img');
+		if (img && img.dataset.src) { img.src = img.dataset.src; }
+	}
+
+	async function loadViewerApiConfig() {
+		try {
+			var resp = await fetch('/frontend/config.js');
+			if (resp.ok) {
+				var text = await resp.text();
+				var match = text.match(/apiBase:\s*'([^']+)'/);
+				if (match) _apiBase = match[1];
+			}
+		} catch (e) { console.warn('Could not load API config:', e); }
+	}
+
+	async function verifyViewerPassword() {
+		var password = document.getElementById('viewerPassword').value;
+		var errorEl = document.getElementById('viewerPwError');
+		errorEl.textContent = '';
+		if (!password) { errorEl.textContent = 'Please enter the project password.'; return; }
+		if (!_apiBase) { errorEl.textContent = 'Unable to verify password.'; return; }
+
+		document.getElementById('verifyViewerBtn').disabled = true;
+		try {
+			var resp = await fetch(_apiBase + '/project-auth', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					office: _projectData.office_name || '',
+					client: _projectData.client_name,
+					project: _projectData.project_name,
+					password: password
+				})
+			});
+			if (!resp.ok) throw new Error('Verification request failed');
+			var data = await resp.json();
+			if (data.authorized) {
+				var storageKey = 'pw_' + (_projectData.office_name || '') + '_' + _projectData.client_name + '_' + _projectData.project_name;
+				sessionStorage.setItem(storageKey, 'verified');
+				unlockViewer();
+			} else {
+				errorEl.textContent = 'Incorrect password. Please try again.';
+			}
+		} catch (err) {
+			errorEl.textContent = 'Verification failed. Please try again.';
+			console.error(err);
+		} finally {
+			document.getElementById('verifyViewerBtn').disabled = false;
+		}
+	}
+
+	(async function checkViewerAuth() {
+		try {
+			var resp = await fetch('../index.json', { cache: 'no-store' });
+			if (!resp.ok) { unlockViewer(); return; }
+			_projectData = await resp.json();
+			if (!_projectData.protected) { unlockViewer(); return; }
+
+			var storageKey = 'pw_' + (_projectData.office_name || '') + '_' + _projectData.client_name + '_' + _projectData.project_name;
+			if (sessionStorage.getItem(storageKey) === 'verified') { unlockViewer(); return; }
+
+			await loadViewerApiConfig();
+			// Stay locked — gate is visible
+		} catch (e) {
+			console.warn('Auth check failed, showing content:', e);
+			unlockViewer();
+		}
+	})();
+
 	var current_path = window.location.pathname.split('/').pop().slice(0,-4);
 
 

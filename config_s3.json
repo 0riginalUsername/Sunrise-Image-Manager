@@ -1,0 +1,32 @@
+{
+  "aws": {
+    "s3_bucket": "sunrise-image-manager",
+    "region": "us-east-1",
+    "stack_name": "sunrise-image-manager"
+  },
+  "site": {
+    "domain_base": "https://pano.seihds.com",
+    "domain_prefix": "/processed"
+  },
+  "images": {
+    "max_width": 8192,
+    "compress_quality": 30
+  },
+  "employees": [
+    "Alan",
+    "Burt",
+    "Gabe",
+    "Kevin",
+    "Morgan",
+    "Nick",
+    "Tanner"
+  ],
+  "email": {
+    "host": "",
+    "port": 587,
+    "user": "",
+    "password": "",
+    "sender": "",
+    "recipients": []
+  }
+}

@@ -1,0 +1,857 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sunrise Image Manager</title>
+    <link rel='stylesheet' href='https://sunrise-eng.com/wp-content/themes/sunrise-eng-2018/style.min.css?ver=1.0.2' />
+    <link rel="icon" type="image/x-icon" href="/frontend/favicon.ico">
+    <style>
+        :root {
+            --sunrise-navy: #113e59;
+            --sunrise-gray: #a7a9ac;
+            --sunrise-yellow: #ffd457;
+            --sunrise-ruby: #d2342e;
+            --sunrise-white: #ffffff;
+            --sunrise-light-bg: #f8f9fa;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: 'Segoe UI', 'PT Sans', Arial, sans-serif;
+            background: var(--sunrise-light-bg);
+            color: var(--sunrise-navy);
+            min-height: 100vh;
+        }
+
+        /* ── Top bar ── */
+        .app-top-bar {
+            background: var(--sunrise-navy);
+            padding: 12px 32px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .app-top-bar img { height: 40px; }
+        .app-top-bar h1 {
+            color: var(--sunrise-white);
+            font-size: 18px;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+        }
+
+        /* ── Main container ── */
+        .app-container {
+            max-width: 1100px;
+            margin: 32px auto;
+            padding: 0 24px;
+        }
+
+        /* ── Form section ── */
+        .form-section {
+            background: var(--sunrise-white);
+            border-radius: 12px;
+            padding: 28px 32px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+            margin-bottom: 24px;
+        }
+        .form-section h2 {
+            font-size: 16px;
+            margin-bottom: 18px;
+            color: var(--sunrise-navy);
+            border-bottom: 2px solid var(--sunrise-yellow);
+            padding-bottom: 8px;
+        }
+        .form-row {
+            display: flex;
+            gap: 16px;
+            flex-wrap: wrap;
+            margin-bottom: 12px;
+        }
+        .form-group {
+            flex: 1;
+            min-width: 200px;
+        }
+        .form-group label {
+            display: block;
+            font-size: 13px;
+            font-weight: 600;
+            margin-bottom: 6px;
+            color: var(--sunrise-navy);
+        }
+        .form-group input,
+        .form-group select {
+            width: 100%;
+            padding: 10px 14px;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            font-size: 14px;
+            font-family: inherit;
+            transition: border-color 0.2s;
+        }
+        .form-group input:focus,
+        .form-group select:focus {
+            border-color: var(--sunrise-navy);
+            outline: none;
+            box-shadow: 0 0 0 2px rgba(17,62,89,0.12);
+        }
+        .form-group .checkbox-label {
+            display: flex;
+            align-items: center;
+            font-size: 14px;
+            cursor: pointer;
+            padding-top: 6px;
+        }
+        .form-group input[type="checkbox"] {
+            width: auto;
+            margin-right: 8px;
+        }
+        .form-group input[type="range"] {
+            padding: 4px 0;
+        }
+        .form-group small {
+            display: block;
+            font-size: 11px;
+            color: var(--sunrise-gray);
+            margin-top: 4px;
+        }
+
+        /* ── Drop zone ── */
+        .drop-zone {
+            background: var(--sunrise-white);
+            border: 2px dashed var(--sunrise-navy);
+            border-radius: 12px;
+            padding: 32px 24px;
+            text-align: center;
+            cursor: pointer;
+            transition: background 0.2s, border-color 0.2s;
+            min-height: 200px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+            margin-bottom: 24px;
+        }
+        .drop-zone:hover,
+        .drop-zone.dragover {
+            background: #eef5fb;
+            border-color: var(--sunrise-yellow);
+        }
+        .drop-zone.has-files {
+            border-style: solid;
+            border-color: #28a745;
+            background: #f0faf3;
+        }
+        .drop-zone h3 {
+            font-size: 15px;
+            margin-bottom: 8px;
+            color: var(--sunrise-navy);
+        }
+        .drop-zone p {
+            font-size: 13px;
+            color: var(--sunrise-gray);
+        }
+        .drop-zone .drop-icon {
+            font-size: 36px;
+            margin-bottom: 12px;
+            opacity: 0.6;
+        }
+        .drop-zone input[type="file"] {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            opacity: 0;
+            cursor: pointer;
+        }
+        .file-list {
+            margin-top: 12px;
+            max-height: 300px;
+            overflow-y: auto;
+            width: 100%;
+            text-align: left;
+            font-size: 12px;
+            color: #555;
+        }
+        .file-list .file-item {
+            padding: 4px 8px;
+            background: #f4f4f4;
+            border-radius: 4px;
+            margin-bottom: 3px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .file-list .file-item .remove-btn {
+            background: none;
+            border: none;
+            color: var(--sunrise-ruby);
+            cursor: pointer;
+            font-size: 14px;
+            padding: 0 4px;
+        }
+        .file-type-badge {
+            display: inline-block;
+            font-size: 10px;
+            font-weight: 700;
+            padding: 2px 6px;
+            border-radius: 3px;
+            margin-left: 6px;
+            white-space: nowrap;
+        }
+        .badge-pano {
+            background: var(--sunrise-navy);
+            color: var(--sunrise-white);
+        }
+        .badge-photo {
+            background: var(--sunrise-yellow);
+            color: var(--sunrise-navy);
+        }
+        .classification-summary {
+            font-size: 13px;
+            color: var(--sunrise-navy);
+            margin-top: 8px;
+            font-weight: 600;
+        }
+
+        /* ── Scanning overlay (shown while registering large drops) ── */
+        .drop-zone-overlay {
+            position: absolute;
+            inset: 0;
+            background: rgba(255,255,255,0.92);
+            border-radius: 12px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 10;
+        }
+        .drop-zone-overlay .scan-spinner {
+            width: 36px;
+            height: 36px;
+            border: 4px solid #e9ecef;
+            border-top-color: var(--sunrise-navy);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin-bottom: 12px;
+        }
+        .drop-zone-overlay .scan-text {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--sunrise-navy);
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* ── Process button ── */
+        .btn-process {
+            display: block;
+            width: 100%;
+            padding: 16px;
+            background: var(--sunrise-yellow);
+            color: var(--sunrise-navy);
+            font-size: 16px;
+            font-weight: 700;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: opacity 0.2s;
+            letter-spacing: 0.5px;
+        }
+        .btn-process:hover { opacity: 0.85; }
+        .btn-process:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        /* ── Progress section ── */
+        .progress-section {
+            background: var(--sunrise-white);
+            border-radius: 12px;
+            padding: 24px 32px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+            margin-top: 24px;
+            display: none;
+        }
+        .progress-section.visible { display: block; }
+        .progress-section h2 {
+            font-size: 16px;
+            margin-bottom: 14px;
+            color: var(--sunrise-navy);
+        }
+        .progress-bar-container {
+            background: #e9ecef;
+            border-radius: 8px;
+            height: 24px;
+            overflow: hidden;
+            margin-bottom: 12px;
+        }
+        .progress-bar-fill {
+            background: linear-gradient(90deg, var(--sunrise-navy), #1a6b9a);
+            height: 100%;
+            width: 0%;
+            border-radius: 8px;
+            transition: width 0.4s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 12px;
+            font-weight: 600;
+            min-width: 40px;
+        }
+        .status-text {
+            font-size: 14px;
+            color: #555;
+            margin-top: 8px;
+        }
+        .status-text.error { color: var(--sunrise-ruby); }
+        .status-text.success { color: #28a745; }
+
+        /* ── Result section ── */
+        .result-section {
+            background: var(--sunrise-white);
+            border-radius: 12px;
+            padding: 24px 32px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+            margin-top: 24px;
+            display: none;
+        }
+        .result-section.visible { display: block; }
+        .result-section h2 {
+            font-size: 16px;
+            margin-bottom: 12px;
+            color: #28a745;
+            border-bottom: 2px solid #28a745;
+            padding-bottom: 8px;
+        }
+        .result-link {
+            display: inline-block;
+            margin-top: 8px;
+            padding: 10px 20px;
+            background: var(--sunrise-navy);
+            color: white;
+            text-decoration: none;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+        .result-link:hover { opacity: 0.85; }
+
+        /* ── App tabs ── */
+        .app-tabs {
+            display: flex;
+            gap: 4px;
+            margin-bottom: 24px;
+            background: var(--sunrise-white);
+            border-radius: 10px;
+            padding: 4px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+        }
+        .app-tab {
+            flex: 1;
+            padding: 12px 16px;
+            border: none;
+            background: transparent;
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--sunrise-navy);
+            cursor: pointer;
+            border-radius: 8px;
+            transition: background 0.2s;
+        }
+        .app-tab:hover { background: #eef5fb; }
+        .app-tab.active {
+            background: var(--sunrise-navy);
+            color: var(--sunrise-white);
+        }
+
+        /* ── Browse projects ── */
+        .browse-section { display: none; }
+        .browse-section.visible { display: block; }
+        .browse-filters {
+            background: var(--sunrise-white);
+            border-radius: 12px;
+            padding: 20px 28px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+            margin-bottom: 20px;
+        }
+        .browse-filters h2 {
+            font-size: 16px;
+            margin-bottom: 14px;
+            color: var(--sunrise-navy);
+            border-bottom: 2px solid var(--sunrise-yellow);
+            padding-bottom: 8px;
+        }
+        .project-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 16px;
+        }
+        .project-card {
+            background: var(--sunrise-white);
+            border-radius: 10px;
+            padding: 20px 24px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+            transition: box-shadow 0.2s, transform 0.1s;
+            cursor: pointer;
+            text-decoration: none;
+            color: inherit;
+            display: block;
+            border-left: 4px solid var(--sunrise-navy);
+        }
+        .project-card:hover {
+            box-shadow: 0 4px 20px rgba(0,0,0,0.12);
+            transform: translateY(-2px);
+        }
+        .project-card h3 {
+            font-size: 16px;
+            margin-bottom: 4px;
+            color: var(--sunrise-navy);
+        }
+        .project-card .project-client {
+            font-size: 13px;
+            color: var(--sunrise-gray);
+            margin-bottom: 10px;
+        }
+        .project-card .project-stats {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+            font-size: 12px;
+        }
+        .project-card .stat {
+            background: var(--sunrise-light-bg);
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-weight: 600;
+        }
+        .project-card .stat-label { color: var(--sunrise-gray); font-weight: 400; }
+        .project-card .project-meta {
+            margin-top: 10px;
+            font-size: 11px;
+            color: var(--sunrise-gray);
+        }
+        .project-card .pw-icon {
+            font-size: 12px;
+            margin-left: 6px;
+        }
+        .browse-empty {
+            text-align: center;
+            padding: 40px;
+            color: var(--sunrise-gray);
+            font-size: 14px;
+        }
+        .browse-loading {
+            text-align: center;
+            padding: 40px;
+            color: var(--sunrise-gray);
+            font-size: 14px;
+        }
+
+        /* ── Footer ── */
+        .app-footer {
+            text-align: center;
+            padding: 24px;
+            color: var(--sunrise-gray);
+            font-size: 12px;
+            margin-top: 40px;
+        }
+
+        /* ── Auth screen ── */
+        .auth-screen {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: calc(100vh - 64px);
+            padding: 24px;
+        }
+        .auth-card {
+            background: var(--sunrise-white);
+            border-radius: 12px;
+            padding: 40px 36px;
+            box-shadow: 0 4px 24px rgba(0,0,0,0.10);
+            max-width: 400px;
+            width: 100%;
+            text-align: center;
+        }
+        .auth-card img { height: 48px; margin-bottom: 12px; }
+        .auth-card h2 {
+            font-size: 20px;
+            color: var(--sunrise-navy);
+            margin-bottom: 24px;
+        }
+        .auth-tabs {
+            display: flex;
+            gap: 4px;
+            margin-bottom: 20px;
+            background: #e9ecef;
+            border-radius: 8px;
+            padding: 3px;
+        }
+        .auth-tab {
+            flex: 1;
+            padding: 10px;
+            border: none;
+            background: transparent;
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--sunrise-navy);
+            cursor: pointer;
+            border-radius: 6px;
+            transition: background 0.2s;
+        }
+        .auth-tab.active {
+            background: var(--sunrise-white);
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        .auth-form input {
+            width: 100%;
+            padding: 12px 14px;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            font-size: 14px;
+            font-family: inherit;
+            margin-bottom: 12px;
+            transition: border-color 0.2s;
+        }
+        .auth-form input:focus {
+            border-color: var(--sunrise-navy);
+            outline: none;
+            box-shadow: 0 0 0 2px rgba(17,62,89,0.12);
+        }
+        .auth-form button {
+            width: 100%;
+            padding: 12px;
+            background: var(--sunrise-yellow);
+            color: var(--sunrise-navy);
+            border: none;
+            border-radius: 8px;
+            font-size: 15px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+        .auth-form button:hover { opacity: 0.85; }
+        .auth-form button:disabled { opacity: 0.5; cursor: not-allowed; }
+        .auth-error {
+            color: var(--sunrise-ruby);
+            font-size: 13px;
+            margin-top: 10px;
+            min-height: 18px;
+        }
+        .auth-info {
+            color: #28a745;
+            font-size: 13px;
+            margin-top: 10px;
+            min-height: 18px;
+        }
+        .auth-form p {
+            font-size: 13px;
+            color: #666;
+            margin-bottom: 14px;
+        }
+
+        /* ── Password management panel ── */
+        .pw-manage {
+            display: none;
+            margin-top: 12px;
+            padding: 14px 16px;
+            background: #f0f4f8;
+            border-radius: 8px;
+            border: 1px solid #d0d8e0;
+        }
+        .pw-manage.visible { display: block; }
+        .pw-manage .pw-status {
+            font-size: 13px;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .pw-manage .pw-status .pw-badge {
+            display: inline-block;
+            font-size: 11px;
+            font-weight: 700;
+            padding: 2px 8px;
+            border-radius: 3px;
+        }
+        .pw-badge-on { background: var(--sunrise-navy); color: var(--sunrise-white); }
+        .pw-badge-off { background: #e9ecef; color: #666; }
+        .pw-manage .pw-actions {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .pw-manage input[type="password"] {
+            padding: 8px 12px;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            font-size: 13px;
+            flex: 1;
+            min-width: 160px;
+        }
+        .pw-manage .btn-pw {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+        .pw-manage .btn-pw:hover { opacity: 0.85; }
+        .pw-manage .btn-pw:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn-pw-set { background: var(--sunrise-yellow); color: var(--sunrise-navy); }
+        .btn-pw-remove { background: #e9ecef; color: var(--sunrise-ruby); }
+        .pw-manage .pw-msg {
+            font-size: 12px;
+            margin-top: 8px;
+            min-height: 16px;
+        }
+        .pw-msg-ok { color: #28a745; }
+        .pw-msg-err { color: var(--sunrise-ruby); }
+
+        /* ── User info in top bar ── */
+        .user-info {
+            display: none;
+            align-items: center;
+            gap: 12px;
+        }
+        .user-info span {
+            color: var(--sunrise-white);
+            font-size: 13px;
+        }
+        .btn-signout {
+            padding: 6px 14px;
+            background: rgba(255,255,255,0.15);
+            color: var(--sunrise-white);
+            border: 1px solid rgba(255,255,255,0.3);
+            border-radius: 4px;
+            font-size: 12px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .btn-signout:hover { background: rgba(255,255,255,0.25); }
+
+        /* ── Responsive ── */
+        @media (max-width: 768px) {
+            .form-row { flex-direction: column; }
+            .auth-card { padding: 28px 20px; }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Top Bar -->
+    <div class="app-top-bar">
+        <img alt="Sunrise logo" src="https://sunrise-eng.com/wp-content/themes/sunrise-eng-2018/assets/img/logo-sunrise-white.svg" />
+        <h1>Pano + Photo Image Manager</h1>
+        <div class="user-info" id="userInfo">
+            <span id="userEmail"></span>
+            <button class="btn-signout" onclick="signOut()">Sign Out</button>
+        </div>
+    </div>
+
+    <!-- Auth Screen (shown when not logged in) -->
+    <div class="auth-screen" id="authScreen">
+        <div class="auth-card">
+            <img alt="Sunrise Engineering" src="https://sunrise-eng.com/wp-content/themes/sunrise-eng-2018/assets/img/logo-sunrise-white.svg" style="background:var(--sunrise-navy);padding:8px 16px;border-radius:6px;" />
+            <h2>Sign in to continue</h2>
+            <div class="auth-tabs">
+                <button class="auth-tab active" id="tabSignin" onclick="showAuthTab('signin')">Sign In</button>
+                <button class="auth-tab" id="tabSignup" onclick="showAuthTab('signup')">Create Account</button>
+            </div>
+            <!-- Sign In -->
+            <div class="auth-form" id="signinForm">
+                <input type="email" id="signinEmail" placeholder="Email address" onkeydown="if(event.key==='Enter')signIn()">
+                <input type="password" id="signinPassword" placeholder="Password" onkeydown="if(event.key==='Enter')signIn()">
+                <button onclick="signIn()" id="signinBtn">Sign In</button>
+                <div class="auth-error" id="signinError"></div>
+            </div>
+            <!-- Sign Up -->
+            <div class="auth-form" id="signupForm" style="display:none;">
+                <input type="email" id="signupEmail" placeholder="Email address">
+                <input type="password" id="signupPassword" placeholder="Password (8+ characters)">
+                <input type="password" id="signupConfirm" placeholder="Confirm password" onkeydown="if(event.key==='Enter')signUp()">
+                <button onclick="signUp()" id="signupBtn">Create Account</button>
+                <div class="auth-error" id="signupError"></div>
+            </div>
+            <!-- Confirm Code -->
+            <div class="auth-form" id="confirmForm" style="display:none;">
+                <p>A verification code has been sent to your email.</p>
+                <input type="text" id="confirmCode" placeholder="Verification code" onkeydown="if(event.key==='Enter')confirmSignUp()">
+                <button onclick="confirmSignUp()" id="confirmBtn">Verify Email</button>
+                <div class="auth-error" id="confirmError"></div>
+                <div class="auth-info" id="confirmInfo"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="app-container" id="appContent" style="display:none;">
+
+        <!-- App Tabs -->
+        <div class="app-tabs">
+            <button class="app-tab active" id="tabUpload" onclick="showAppTab('upload')">Upload Images</button>
+            <button class="app-tab" id="tabBrowse" onclick="showAppTab('browse')">Browse Projects</button>
+        </div>
+
+        <!-- ═══ Upload Tab ═══ -->
+        <div id="uploadSection">
+
+        <!-- Project Info Form -->
+        <div class="form-section">
+            <h2>Project Information</h2>
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="officeName">Office</label>
+                    <input type="text" id="officeName" list="officeList" placeholder="Select or type office" autocomplete="off" required>
+                    <datalist id="officeList"></datalist>
+                </div>
+                <div class="form-group">
+                    <label for="clientName">Client Name</label>
+                    <input type="text" id="clientName" list="clientList" placeholder="Select or type new client" autocomplete="off" required>
+                    <datalist id="clientList"></datalist>
+                </div>
+                <div class="form-group">
+                    <label for="projectName">Project Name</label>
+                    <input type="text" id="projectName" list="projectList" placeholder="Select or type new project" autocomplete="off" required>
+                    <datalist id="projectList"></datalist>
+                </div>
+            </div>
+            <!-- Password management (visible for existing projects) -->
+            <div class="pw-manage" id="pwManagePanel">
+                <div class="pw-status">
+                    Project password: <span class="pw-badge" id="pwBadge">checking...</span>
+                </div>
+                <div class="pw-actions">
+                    <input type="password" id="pwManageInput" placeholder="New password" autocomplete="new-password">
+                    <button class="btn-pw btn-pw-set" id="pwSetBtn" onclick="setProjectPassword()">Set Password</button>
+                    <button class="btn-pw btn-pw-remove" id="pwRemoveBtn" onclick="removeProjectPassword()" style="display:none;">Remove</button>
+                </div>
+                <div class="pw-msg" id="pwMsg"></div>
+            </div>
+        </div>
+
+        <!-- Drop Zone (unified — auto-classifies pano vs photo) -->
+        <div class="drop-zone" id="dropZone">
+            <div class="drop-icon">&#x1F4F7;</div>
+            <h3>Drop All Images Here</h3>
+            <p>Panoramas and standard photos are detected automatically (.jpg files)</p>
+            <input type="file" id="fileInput" multiple accept=".jpg,.jpeg">
+            <div class="classification-summary" id="classificationSummary"></div>
+            <div class="file-list" id="fileList"></div>
+        </div>
+
+        <!-- Batch Options -->
+        <div class="form-section">
+            <h2>Batch Options</h2>
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="keepFilenames">
+                        Keep original filenames (skip auto-rename)
+                    </label>
+                </div>
+                <div class="form-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="keepOriginals">
+                        Keep original images (no compression or resize)
+                    </label>
+                </div>
+            </div>
+            <div class="form-row">
+                <div class="form-group" id="qualityGroup">
+                    <label for="jpegQuality">Compression Quality: <span id="qualityValue">10</span></label>
+                    <input type="range" id="jpegQuality" min="10" max="95" value="10">
+                </div>
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="csvUpload">Position CSV (optional)</label>
+                    <input type="file" id="csvUpload" accept=".csv">
+                    <small>Format: name, northing, easting, elevation &mdash; for indoor photos without GPS</small>
+                </div>
+                <div class="form-group">
+                    <label for="planUpload">Background Plan (optional)</label>
+                    <input type="file" id="planUpload" accept=".jpg,.jpeg">
+                    <small>JPG site plan or floor plan &mdash; displayed behind image markers on the project page</small>
+                </div>
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="projectPassword">Project Password (optional)</label>
+                    <input type="password" id="projectPassword" placeholder="Leave blank for no password" autocomplete="new-password">
+                    <small>If set, clients must enter this password to view the project landing page</small>
+                </div>
+            </div>
+        </div>
+
+        <!-- Process Button -->
+        <button class="btn-process" id="processBtn" onclick="startProcessing()">
+            Upload &amp; Process All
+        </button>
+
+        <!-- Progress -->
+        <div class="progress-section" id="progressSection">
+            <h2>Processing Status</h2>
+            <div class="progress-bar-container">
+                <div class="progress-bar-fill" id="progressBar">0%</div>
+            </div>
+            <div class="status-text" id="statusText">Preparing upload...</div>
+        </div>
+
+        <!-- Result -->
+        <div class="result-section" id="resultSection">
+            <h2>Processing Complete</h2>
+            <p id="resultMessage"></p>
+            <a class="result-link" id="resultLink" href="#" target="_blank">View First Panorama</a>
+            <a class="result-link" id="landingLink" href="#" target="_blank" style="margin-left:12px;background:var(--sunrise-yellow);color:var(--sunrise-navy);">View Project Page</a>
+        </div>
+
+        </div><!-- /uploadSection -->
+
+        <!-- ═══ Browse Projects Tab ═══ -->
+        <div class="browse-section" id="browseSection">
+            <div class="browse-filters">
+                <h2>Find a Project</h2>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="browseOffice">Office</label>
+                        <select id="browseOffice">
+                            <option value="">All Offices</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="browseClient">Client</label>
+                        <select id="browseClient">
+                            <option value="">All Clients</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="browseProject">Project</label>
+                        <select id="browseProject">
+                            <option value="">All Projects</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+            <div id="projectGrid" class="project-grid"></div>
+            <div class="browse-loading" id="browseLoading" style="display:none;">Loading projects...</div>
+            <div class="browse-empty" id="browseEmpty" style="display:none;">No projects found. Upload some images to get started!</div>
+        </div>
+
+    </div>
+
+    <div class="app-footer">
+        Sunrise Engineering &copy; 2025 &mdash; Panoramic Image Management System
+    </div>
+
+    <!-- config.js is auto-generated by deploy.sh with the API URL + Cognito config -->
+    <script src="/frontend/config.js"></script>
+    <!-- Cognito auth SDK -->
+    <script src="https://unpkg.com/amazon-cognito-identity-js@6/dist/amazon-cognito-identity.min.js"></script>
+    <script src="/frontend/app.js"></script>
+</body>
+</html>
